@@ -13,6 +13,29 @@ func ExtractContentModerationText(protocol string, body []byte) string {
 	return ExtractContentModerationInput(protocol, body).Text
 }
 
+func ExtractContentModerationHashInputs(protocol string, body []byte) []ContentModerationInput {
+	if len(body) == 0 || !gjson.ValidBytes(body) {
+		return nil
+	}
+	switch protocol {
+	case ContentModerationProtocolAnthropicMessages:
+		return collectAllRoleMessageInputs(gjson.GetBytes(body, "messages"), "user", collectAnthropicUserContentValue)
+	case ContentModerationProtocolOpenAIChat:
+		return collectAllRoleMessageInputs(gjson.GetBytes(body, "messages"), "user", collectContentValue)
+	case ContentModerationProtocolOpenAIResponses:
+		return collectAllResponsesInputItems(gjson.GetBytes(body, "input"))
+	case ContentModerationProtocolGemini:
+		return collectAllGeminiContentInputs(gjson.GetBytes(body, "contents"))
+	case ContentModerationProtocolOpenAIImages:
+		return []ContentModerationInput{ExtractContentModerationInput(protocol, body)}
+	default:
+		inputs := collectAllResponsesInputItems(gjson.GetBytes(body, "input"))
+		inputs = append(inputs, collectAllRoleMessageInputs(gjson.GetBytes(body, "messages"), "user", collectContentValue)...)
+		inputs = append(inputs, collectAllGeminiContentInputs(gjson.GetBytes(body, "contents"))...)
+		return normalizeContentModerationInputs(inputs)
+	}
+}
+
 func ExtractContentModerationInput(protocol string, body []byte) ContentModerationInput {
 	if len(body) == 0 || !gjson.ValidBytes(body) {
 		return ContentModerationInput{}
@@ -136,16 +159,14 @@ func collectLastResponsesInput(input gjson.Result, parts *[]string, images *[]st
 		if !isResponsesUserTextItem(last) {
 			return
 		}
-		collectContentValue(last.Get("content"), parts, images)
-		if last.Get("type").String() == "input_text" || last.Get("text").Exists() {
-			collectContentValue(last, parts, images)
-		}
+		var candidate []string
+		var candidateImages []string
+		collectResponsesInputItemContent(last, &candidate, &candidateImages)
+		*parts = append(*parts, candidate...)
+		*images = append(*images, candidateImages...)
 	case input.IsObject():
 		if isResponsesUserTextItem(input) {
-			collectContentValue(input.Get("content"), parts, images)
-			if input.Get("type").String() == "input_text" || input.Get("text").Exists() {
-				collectContentValue(input, parts, images)
-			}
+			collectResponsesInputItemContent(input, parts, images)
 		}
 	}
 }
@@ -164,10 +185,7 @@ func isResponsesUserTextItem(item gjson.Result) bool {
 func responseItemHasModerationText(item gjson.Result) bool {
 	var parts []string
 	var images []string
-	collectContentValue(item.Get("content"), &parts, &images)
-	if item.Get("type").String() == "input_text" || item.Get("text").Exists() {
-		collectContentValue(item, &parts, &images)
-	}
+	collectResponsesInputItemContent(item, &parts, &images)
 	return normalizeContentModerationText(strings.Join(parts, "\n")) != "" || len(images) > 0
 }
 
@@ -198,6 +216,120 @@ func collectLastGeminiContent(contents gjson.Result, parts *[]string, images *[]
 	}
 	*parts = append(*parts, candidate...)
 	*images = append(*images, candidateImages...)
+}
+
+type moderationContentCollector func(gjson.Result, *[]string, *[]string)
+
+func collectAllRoleMessageInputs(messages gjson.Result, role string, collector moderationContentCollector) []ContentModerationInput {
+	if !messages.IsArray() {
+		return nil
+	}
+	var inputs []ContentModerationInput
+	for _, item := range messages.Array() {
+		if strings.ToLower(strings.TrimSpace(item.Get("role").String())) != role {
+			continue
+		}
+		var parts []string
+		var images []string
+		collector(item.Get("content"), &parts, &images)
+		inputs = appendModerationInput(inputs, parts, images)
+	}
+	return normalizeContentModerationInputs(inputs)
+}
+
+func collectAllResponsesInputItems(input gjson.Result) []ContentModerationInput {
+	switch {
+	case !input.Exists():
+		return nil
+	case input.Type == gjson.String:
+		return normalizeContentModerationInputs([]ContentModerationInput{{Text: input.String()}})
+	case input.IsArray():
+		var inputs []ContentModerationInput
+		for _, item := range input.Array() {
+			if !isResponsesUserTextItem(item) {
+				continue
+			}
+			var parts []string
+			var images []string
+			collectResponsesInputItemContent(item, &parts, &images)
+			inputs = appendModerationInput(inputs, parts, images)
+		}
+		return normalizeContentModerationInputs(inputs)
+	case input.IsObject():
+		if !isResponsesUserTextItem(input) {
+			return nil
+		}
+		var parts []string
+		var images []string
+		collectResponsesInputItemContent(input, &parts, &images)
+		return normalizeContentModerationInputs(appendModerationInput(nil, parts, images))
+	default:
+		return nil
+	}
+}
+
+func collectAllGeminiContentInputs(contents gjson.Result) []ContentModerationInput {
+	if !contents.IsArray() {
+		return nil
+	}
+	var inputs []ContentModerationInput
+	for _, item := range contents.Array() {
+		role := strings.ToLower(strings.TrimSpace(item.Get("role").String()))
+		if role != "" && role != "user" {
+			continue
+		}
+		var parts []string
+		var images []string
+		if arr := item.Get("parts"); arr.IsArray() {
+			arr.ForEach(func(_, part gjson.Result) bool {
+				addModerationText(&parts, part.Get("text").String())
+				addGeminiModerationImage(&images, part)
+				return true
+			})
+		}
+		inputs = appendModerationInput(inputs, parts, images)
+	}
+	return normalizeContentModerationInputs(inputs)
+}
+
+func appendModerationInput(inputs []ContentModerationInput, parts []string, images []string) []ContentModerationInput {
+	input := ContentModerationInput{
+		Text:   normalizeContentModerationText(strings.Join(parts, "\n")),
+		Images: normalizeModerationImages(images),
+	}
+	input.Normalize()
+	if input.IsEmpty() {
+		return inputs
+	}
+	return append(inputs, input)
+}
+
+func normalizeContentModerationInputs(inputs []ContentModerationInput) []ContentModerationInput {
+	if len(inputs) == 0 {
+		return nil
+	}
+	out := make([]ContentModerationInput, 0, len(inputs))
+	seen := make(map[string]struct{}, len(inputs))
+	for _, input := range inputs {
+		input.Normalize()
+		if input.IsEmpty() {
+			continue
+		}
+		hash := input.Hash()
+		if _, ok := seen[hash]; ok {
+			continue
+		}
+		seen[hash] = struct{}{}
+		out = append(out, input)
+	}
+	return out
+}
+
+func collectResponsesInputItemContent(item gjson.Result, parts *[]string, images *[]string) {
+	collectContentValue(item.Get("content"), parts, images)
+	if item.Get("type").String() == "input_text" || item.Get("text").Exists() {
+		collectContentValue(item, parts, images)
+	}
 }
 
 func collectContentValue(value gjson.Result, parts *[]string, images *[]string) {
