@@ -921,7 +921,10 @@ func (s *ContentModerationService) Check(ctx context.Context, input ContentModer
 		}
 	}
 	if cfg.PreHashCheckEnabled && s.hashCache != nil {
-		matchedHash, matchedContent, matched := s.matchFlaggedInputHash(ctx, input, content, hashText)
+		matched, err := s.hashCache.HasFlaggedInputHash(ctx, hashText)
+		if err != nil {
+			slog.Warn("content_moderation.hash_check_failed", "user_id", input.UserID, "endpoint", input.Endpoint, "error", err)
+		}
 		if matched {
 			if cfg.Mode == ContentModerationModePreBlock {
 				s.recordPreBlockSyncMetric(0, ContentModerationActionHashBlock)
@@ -932,13 +935,13 @@ func (s *ContentModerationService) Check(ctx context.Context, input ContentModer
 				"group_id", contentModerationLogGroupID(input.GroupID),
 				"endpoint", input.Endpoint,
 				"protocol", input.Protocol,
-				"input_hash", matchedHash)
+				"input_hash", hashText)
 			message := cfg.BlockMessage
 			if message != "" {
-				message = fmt.Sprintf("%s (hash: %s)", message, matchedHash)
+				message = fmt.Sprintf("%s（hash: %s）", message, hashText)
 			}
 			scores := map[string]float64{"hash": 1.0}
-			log := s.buildLog(input, cfg, ContentModerationActionHashBlock, true, "hash", 1.0, scores, matchedContent.ExcerptText(), nil, nil, "")
+			log := s.buildLog(input, cfg, ContentModerationActionHashBlock, true, "hash", 1.0, scores, content.ExcerptText(), nil, nil, "")
 			s.enqueueRecord(input, cfg, log, hashText, false, false)
 			return &ContentModerationDecision{
 				Allowed:    false,
@@ -946,7 +949,7 @@ func (s *ContentModerationService) Check(ctx context.Context, input ContentModer
 				Flagged:    true,
 				Message:    message,
 				StatusCode: cfg.BlockStatus,
-				InputHash:  matchedHash,
+				InputHash:  hashText,
 				Action:     ContentModerationActionHashBlock,
 			}, nil
 		}
@@ -989,49 +992,6 @@ func (s *ContentModerationService) Check(ctx context.Context, input ContentModer
 	}
 
 	return s.checkSync(ctx, input, cfg, content, hashText, nil, true), nil
-}
-
-func (s *ContentModerationService) matchFlaggedInputHash(ctx context.Context, input ContentModerationCheckInput, currentContent ContentModerationInput, currentHash string) (string, ContentModerationInput, bool) {
-	if s == nil || s.hashCache == nil {
-		return "", ContentModerationInput{}, false
-	}
-	hashInputs := []ContentModerationInput{currentContent}
-	for _, historyInput := range ExtractContentModerationHashInputs(input.Protocol, input.Body) {
-		hashInputs = append(hashInputs, historyInput)
-	}
-	seen := make(map[string]struct{}, len(hashInputs)+1)
-	for i, hashInput := range hashInputs {
-		hashInput.Normalize()
-		if hashInput.IsEmpty() {
-			continue
-		}
-		hash := hashInput.Hash()
-		if i == 0 && currentHash != "" {
-			hash = currentHash
-		}
-		hash = normalizeContentModerationHash(hash)
-		if hash == "" {
-			continue
-		}
-		if _, ok := seen[hash]; ok {
-			continue
-		}
-		seen[hash] = struct{}{}
-		matched, err := s.hashCache.HasFlaggedInputHash(ctx, hash)
-		if err != nil {
-			slog.Warn("content_moderation.hash_check_failed",
-				"user_id", input.UserID,
-				"endpoint", input.Endpoint,
-				"protocol", input.Protocol,
-				"input_hash", hash,
-				"error", err)
-			continue
-		}
-		if matched {
-			return hash, hashInput, true
-		}
-	}
-	return "", ContentModerationInput{}, false
 }
 
 func (s *ContentModerationService) checkSync(ctx context.Context, input ContentModerationCheckInput, cfg *ContentModerationConfig, content ContentModerationInput, hashText string, queueDelay *int, allowBlock bool) *ContentModerationDecision {
