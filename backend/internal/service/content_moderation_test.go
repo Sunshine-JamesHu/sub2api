@@ -438,6 +438,15 @@ func TestMatchBlockedKeyword_CaseInsensitiveSubstring(t *testing.T) {
 	require.False(t, hit)
 }
 
+func TestMatchBlockedKeyword_MultiTermRuleRequiresAllTerms(t *testing.T) {
+	keyword, hit := matchBlockedKeyword("CCB is here, then 哈哈哈, and finally ZXQ marker", []string{"哈哈哈 ZXQ CCB"})
+	require.True(t, hit)
+	require.Equal(t, "哈哈哈 ZXQ CCB", keyword)
+
+	_, hit = matchBlockedKeyword("哈哈哈 and CCB are present, but the marker is absent", []string{"哈哈哈 ZXQ CCB"})
+	require.False(t, hit)
+}
+
 func TestContentModerationCheck_PreBlockKeywordHitSkipsUpstreamCall(t *testing.T) {
 	upstreamCalled := false
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
