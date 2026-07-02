@@ -2592,10 +2592,18 @@ func matchBlockedKeyword(text string, keywords []string) (string, bool) {
 	}
 	lower := strings.ToLower(text)
 	for _, kw := range keywords {
-		if kw == "" {
+		terms := strings.Fields(kw)
+		if len(terms) == 0 {
 			continue
 		}
-		if strings.Contains(lower, strings.ToLower(kw)) {
+		matched := true
+		for _, term := range terms {
+			if !strings.Contains(lower, strings.ToLower(term)) {
+				matched = false
+				break
+			}
+		}
+		if matched {
 			return kw, true
 		}
 	}
