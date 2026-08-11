@@ -119,9 +119,13 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 			h.errorResponse(c, http.StatusForbidden, "permission_error", service.ImageGenerationPermissionMessage())
 			return
 		}
-		if moderationBody := requestInfo.ModerationBody(); len(moderationBody) > 0 {
-			decision := h.checkSecurityAudit(c, reqLog, apiKey, subject, service.ContentModerationProtocolOpenAIImages, requestModel, moderationBody)
-			if decision != nil && !decision.AllowNextStage {
+		if moderationBody := requestInfo.ModerationBody(); len(moderationBody) == 0 {
+			if decision := h.checkCyberSessionBlockBeforeAudit(c, apiKey, requestModel, body); decision != nil && !decision.AllowNextStage {
+				h.openAISecurityAuditError(c, decision)
+				return
+			}
+		} else {
+			if decision := h.checkSecurityAuditWithSessionBody(c, reqLog, apiKey, subject, service.ContentModerationProtocolOpenAIImages, requestModel, moderationBody, body); decision != nil && !decision.AllowNextStage {
 				h.openAISecurityAuditError(c, decision)
 				return
 			}

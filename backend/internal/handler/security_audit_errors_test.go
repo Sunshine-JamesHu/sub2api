@@ -5,10 +5,14 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/securityaudit"
+	"github.com/Wei-Shaw/sub2api/internal/service"
+	coderws "github.com/coder/websocket"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
@@ -141,6 +145,66 @@ func TestPromptGuardWebSocketCloseMappingGolden(t *testing.T) {
 	require.Equal(t, securityaudit.ErrorCodeUnavailable, securityAuditWSCloseReason(promptGuardDecision(securityaudit.DecisionUnavailable)))
 	require.Equal(t, int64(1013), int64(securityAuditWSCloseStatus(promptGuardDecision(securityaudit.DecisionInvalid))))
 	require.Equal(t, securityaudit.ErrorCodeInvalidResponse, securityAuditWSCloseReason(promptGuardDecision(securityaudit.DecisionInvalid)))
+}
+
+func TestCyberSessionBlockedDecisionUsesOpenAIAndWebSocketProtocols(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	decision := cyberSessionBlockedSecurityAuditDecision()
+	c, recorder := securityAuditErrorTestContext(t)
+	(&OpenAIGatewayHandler{}).openAISecurityAuditError(c, decision)
+	require.Equal(t, http.StatusForbidden, recorder.Code)
+	errorObject := requireObject(t, decodeErrorJSON(t, recorder)["error"])
+	require.Equal(t, "permission_error", errorObject["type"])
+	require.Equal(t, cyberSessionBlockedErrorCode, errorObject["code"])
+	require.Equal(t, cyberSessionBlockedClientMsg, errorObject["message"])
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := coderws.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer func() { _ = conn.CloseNow() }()
+		writeSecurityAuditWSError(r.Context(), conn, decision)
+		_ = conn.Close(securityAuditWSCloseStatus(decision), securityAuditWSCloseReason(decision))
+	}))
+	defer server.Close()
+
+	dialCtx, cancelDial := context.WithTimeout(context.Background(), 3*time.Second)
+	client, _, err := coderws.Dial(dialCtx, "ws"+strings.TrimPrefix(server.URL, "http"), nil)
+	cancelDial()
+	require.NoError(t, err)
+	defer func() { _ = client.CloseNow() }()
+
+	readCtx, cancelRead := context.WithTimeout(context.Background(), 3*time.Second)
+	_, payload, err := client.Read(readCtx)
+	cancelRead()
+	require.NoError(t, err)
+	var frame map[string]any
+	require.NoError(t, json.Unmarshal(payload, &frame))
+	require.Equal(t, "evt_cyber_session_blocked", frame["event_id"])
+	errorFrame := requireObject(t, frame["error"])
+	require.Equal(t, cyberSessionBlockedErrorCode, errorFrame["code"])
+	require.Equal(t, cyberSessionBlockedClientMsg, errorFrame["message"])
+	require.Equal(t, coderws.StatusPolicyViolation, securityAuditWSCloseStatus(decision))
+	require.Equal(t, "session blocked by cyber-security policy", securityAuditWSCloseReason(decision))
+}
+
+func TestCyberSessionBlockedDecisionWritesCompactSSEFailure(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, recorder := securityAuditErrorTestContext(t)
+	service.MarkOpenAICompactClientStream(c)
+	stop := service.StartOpenAICompactSSEKeepalive(c, time.Millisecond)
+	t.Cleanup(stop)
+	require.Eventually(t, func() bool {
+		return recorder.Code == http.StatusOK && strings.Contains(recorder.Body.String(), ": keepalive\n\n")
+	}, time.Second, time.Millisecond)
+
+	(&OpenAIGatewayHandler{}).openAISecurityAuditError(c, cyberSessionBlockedSecurityAuditDecision())
+
+	body := recorder.Body.String()
+	require.Contains(t, body, "event: response.failed\n")
+	require.Contains(t, body, `"code":"permission_denied"`)
+	require.Contains(t, body, cyberSessionBlockedClientMsg)
 }
 
 func TestLegacyModerationErrorKeepsExistingClientPriority(t *testing.T) {

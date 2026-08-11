@@ -14,6 +14,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
 	"github.com/gin-gonic/gin"
+	"github.com/gin-gonic/gin/binding"
 	"go.uber.org/zap"
 )
 
@@ -30,16 +31,20 @@ func NewBatchImageHandler(service *service.BatchImagePublicService, download *se
 
 func (h *BatchImageHandler) Submit(c *gin.Context) {
 	var req service.BatchImageSubmitRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
+	if err := c.ShouldBindBodyWith(&req, binding.JSON); err != nil {
 		batchImageError(c, service.ErrBatchImageInvalidItems)
 		return
+	}
+	var rawBody []byte
+	if value, exists := c.Get(gin.BodyBytesKey); exists {
+		rawBody, _ = value.([]byte)
 	}
 	owner, ok := batchImageOwnerFromContext(c)
 	if !ok {
 		batchImageError(c, infraerrors.New(http.StatusUnauthorized, "API_KEY_REQUIRED", "API key is required"))
 		return
 	}
-	if !h.checkSecurityAuditBeforeSubmit(c, &req) {
+	if !h.checkSecurityAuditBeforeSubmit(c, &req, rawBody) {
 		return
 	}
 	if sessionID := service.ExtractClientSessionID(c); sessionID != "" {
@@ -53,7 +58,7 @@ func (h *BatchImageHandler) Submit(c *gin.Context) {
 	c.JSON(http.StatusOK, got)
 }
 
-func (h *BatchImageHandler) checkSecurityAuditBeforeSubmit(c *gin.Context, req *service.BatchImageSubmitRequest) bool {
+func (h *BatchImageHandler) checkSecurityAuditBeforeSubmit(c *gin.Context, req *service.BatchImageSubmitRequest, sessionBody []byte) bool {
 	if h == nil || h.openAI == nil || req == nil {
 		return true
 	}
@@ -74,6 +79,10 @@ func (h *BatchImageHandler) checkSecurityAuditBeforeSubmit(c *gin.Context, req *
 		}
 	}
 	if len(items) == 0 {
+		if decision := h.openAI.checkCyberSessionBlockBeforeAudit(c, apiKey, req.Model, sessionBody); decision != nil && !decision.AllowNextStage {
+			h.openAI.openAISecurityAuditError(c, decision)
+			return false
+		}
 		return true
 	}
 	body, err := json.Marshal(map[string]any{"request": map[string]any{"items": items}})
@@ -83,7 +92,7 @@ func (h *BatchImageHandler) checkSecurityAuditBeforeSubmit(c *gin.Context, req *
 	}
 	reqLog := requestLogger(c, "handler.batch_image.security_audit",
 		zap.Int64("user_id", subject.UserID), zap.Int64("api_key_id", apiKey.ID), zap.String("model", req.Model))
-	decision := h.openAI.checkSecurityAudit(c, reqLog, apiKey, subject, service.ContentModerationProtocolOpenAIImages, req.Model, body)
+	decision := h.openAI.checkSecurityAuditWithSessionBody(c, reqLog, apiKey, subject, service.ContentModerationProtocolOpenAIImages, req.Model, body, sessionBody)
 	if decision != nil && !decision.AllowNextStage {
 		h.openAI.openAISecurityAuditError(c, decision)
 		return false

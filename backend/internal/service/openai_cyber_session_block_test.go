@@ -44,6 +44,13 @@ func TestCyberSessionBlockKey(t *testing.T) {
 	c4, b4 := newCyberBlockTestCtx(nil, `{"prompt_cache_key":"pck-1"}`)
 	require.NotEmpty(t, CyberSessionBlockKey(101, c4, b4))
 
+	// A partially initialized context has no request headers, but body-only
+	// prompt_cache_key identity remains valid and must not panic.
+	cNoRequest, _ := gin.CreateTestContext(httptest.NewRecorder())
+	require.NotPanics(t, func() {
+		require.NotEmpty(t, CyberSessionBlockKey(101, cNoRequest, []byte(`{"prompt_cache_key":"body-only"}`)))
+	})
+
 	// No explicit signal → empty key → caller must skip blocking entirely.
 	c5, b5 := newCyberBlockTestCtx(nil, `{"input":"hello world"}`)
 	require.Empty(t, CyberSessionBlockKey(101, c5, b5))
@@ -54,17 +61,43 @@ func TestCyberSessionBlockKey(t *testing.T) {
 	require.NotEmpty(t, k6)
 	c6b, b6b := newCyberBlockTestCtx(map[string]string{"conversation_id": "conv-xyz"}, `{}`)
 	require.Equal(t, k6, CyberSessionBlockKey(101, c6b, b6b), "conversation_id key must be stable")
+
+	// Routing affinity and response-continuation signals must never become a
+	// local cyber lock identity.
+	for _, tc := range []struct {
+		name    string
+		headers map[string]string
+		body    string
+	}{
+		{name: "x session affinity", headers: map[string]string{"X-Session-Affinity": "affinity-1"}, body: `{}`},
+		{name: "x session id", headers: map[string]string{"X-Session-Id": "session-1"}, body: `{}`},
+		{name: "x opencode session", headers: map[string]string{"X-OpenCode-Session": "opencode-1"}, body: `{}`},
+		{name: "x conversation id", headers: map[string]string{"X-Conversation-ID": "conversation-1"}, body: `{}`},
+		{name: "grok conversation", headers: map[string]string{"X-Grok-Conv-Id": "grok-1"}, body: `{}`},
+		{name: "previous response", body: `{"previous_response_id":"resp_123"}`},
+		{name: "content only", body: `{"input":"same prompt must not lock a session"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, body := newCyberBlockTestCtx(tc.headers, tc.body)
+			require.Empty(t, CyberSessionBlockKey(101, c, body))
+		})
+	}
 }
 
 // --- fakes ---
 
 type fakeCyberBlockStore struct {
-	blocked map[string]bool
+	blocked  map[string]bool
+	readErr  error
+	writeErr error
 }
 
 var _ CyberSessionBlockStore = (*fakeCyberBlockStore)(nil)
 
 func (f *fakeCyberBlockStore) SetCyberSessionBlocked(_ context.Context, key string, _ time.Duration) error {
+	if f.writeErr != nil {
+		return f.writeErr
+	}
 	if f.blocked == nil {
 		f.blocked = map[string]bool{}
 	}
@@ -73,6 +106,9 @@ func (f *fakeCyberBlockStore) SetCyberSessionBlocked(_ context.Context, key stri
 }
 
 func (f *fakeCyberBlockStore) IsCyberSessionBlocked(_ context.Context, key string) (bool, error) {
+	if f.readErr != nil {
+		return false, f.readErr
+	}
 	return f.blocked[key], nil
 }
 
@@ -204,4 +240,22 @@ func TestCyberSessionBlock_RoundTrip(t *testing.T) {
 
 	// Different key: still not blocked.
 	require.False(t, svc.IsCyberSessionBlocked(ctx, "other-key"))
+}
+
+func TestCyberSessionBlockStoreErrorsFailOpen(t *testing.T) {
+	settingSvc := &SettingService{settingRepo: &fakeSettingRepo{vals: map[string]string{
+		SettingKeyCyberSessionBlockEnabled:    "true",
+		SettingKeyCyberSessionBlockTTLSeconds: "60",
+	}}}
+	combo := &comboCacheAndStore{}
+	svc := &OpenAIGatewayService{cache: combo, settingService: settingSvc}
+	ctx := context.Background()
+
+	combo.store.readErr = errors.New("redis read failed")
+	require.False(t, svc.IsCyberSessionBlocked(ctx, "read-error-key"), "read errors must fail open")
+
+	combo.store.readErr = nil
+	combo.store.writeErr = errors.New("redis write failed")
+	require.NotPanics(t, func() { svc.MarkCyberSessionBlocked(ctx, "write-error-key") })
+	require.False(t, svc.IsCyberSessionBlocked(ctx, "write-error-key"), "write errors must not create a local block")
 }

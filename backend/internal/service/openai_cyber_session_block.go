@@ -4,10 +4,12 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"strings"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
 )
 
 // CyberSessionBlockStore 是 cyber 会话屏蔽表的存取接口。
@@ -23,13 +25,31 @@ type CyberSessionBlockStore interface {
 // sha256。无显式标识返回空串——调用方必须放行（粒度决策：不退化到
 // user/apikey/内容派生）。
 func CyberSessionBlockKey(apiKeyID int64, c *gin.Context, body []byte) string {
-	raw := explicitOpenAISessionID(c, body)
+	raw := cyberSessionBlockID(c, body)
 	if raw == "" {
 		return ""
 	}
 	isolated := isolateOpenAISessionID(apiKeyID, raw)
 	sum := sha256.Sum256([]byte(isolated))
 	return hex.EncodeToString(sum[:])
+}
+
+// cyberSessionBlockID intentionally uses a narrower identity set than sticky
+// scheduling. A local cyber block must only apply to an explicit session sent
+// by the client, never to routing-only affinity headers or a content fallback.
+func cyberSessionBlockID(c *gin.Context, body []byte) string {
+	if c != nil && c.Request != nil {
+		if sessionID := strings.TrimSpace(c.GetHeader("session_id")); sessionID != "" {
+			return sessionID
+		}
+		if conversationID := strings.TrimSpace(c.GetHeader("conversation_id")); conversationID != "" {
+			return conversationID
+		}
+	}
+	if len(body) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(gjson.GetBytes(body, "prompt_cache_key").String())
 }
 
 // cyberSessionBlockStore 探测 cache 是否具备屏蔽存储能力。

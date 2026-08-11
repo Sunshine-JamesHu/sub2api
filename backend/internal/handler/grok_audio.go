@@ -136,6 +136,19 @@ func (h *OpenAIGatewayHandler) GrokVoice(c *gin.Context, endpoint string) {
 		return
 	}
 	subscription, _ := middleware2.GetSubscriptionFromContext(c)
+	var body []byte
+	var err error
+	if endpoint == "tts" {
+		body, err = readGrokVoiceGatewayBody(c)
+		if err != nil {
+			h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", err.Error())
+			return
+		}
+		if decision := h.checkCyberSessionBlockBeforeAudit(c, apiKey, "grok-4.5", body); decision != nil && !decision.AllowNextStage {
+			h.openAISecurityAuditError(c, decision)
+			return
+		}
+	}
 	if err := h.billingCacheService.CheckBillingEligibility(c.Request.Context(), apiKey.User, apiKey, apiKey.Group, subscription, service.QuotaPlatform(c.Request.Context(), apiKey)); err != nil {
 		status, code, message, retryAfter := billingErrorDetails(err)
 		if retryAfter > 0 {
@@ -145,25 +158,27 @@ func (h *OpenAIGatewayHandler) GrokVoice(c *gin.Context, endpoint string) {
 		return
 	}
 
-	body, err := readGrokVoiceGatewayBody(c)
-	if err != nil {
-		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", err.Error())
-		return
+	if endpoint != "tts" {
+		body, err = readGrokVoiceGatewayBody(c)
+		if err != nil {
+			h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", err.Error())
+			return
+		}
 	}
 	if endpoint == "tts" {
 		subject, _ := middleware2.GetAuthSubjectFromContext(c)
 		reqLog := requestLogger(c, "handler.openai_gateway.grok_voice", zap.String("endpoint", endpoint))
-		// TTS bodies use {"input":"..."} (and variants). Normalize to chat messages so
-		// content moderation extractors see the spoken text.
+		// TTS bodies use {"input":"..."}; normalize only the audit payload while
+		// retaining the original body for explicit session blocking.
 		auditBody := body
 		if input := extractGrokTTSInputText(body); input != "" {
-			if b, err := json.Marshal(map[string]any{
+			if b, marshalErr := json.Marshal(map[string]any{
 				"messages": []map[string]any{{"role": "user", "content": input}},
-			}); err == nil {
+			}); marshalErr == nil {
 				auditBody = b
 			}
 		}
-		if decision := h.checkSecurityAudit(c, reqLog, apiKey, subject, service.ContentModerationProtocolOpenAIChat, "grok-4.5", auditBody); decision != nil && !decision.AllowNextStage {
+		if decision := h.checkSecurityAuditWithSessionBody(c, reqLog, apiKey, subject, service.ContentModerationProtocolOpenAIChat, "grok-4.5", auditBody, body); decision != nil && !decision.AllowNextStage {
 			h.openAISecurityAuditError(c, decision)
 			return
 		}

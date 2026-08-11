@@ -148,12 +148,16 @@ func (h *AsyncImageHandler) checkSecurityAuditBeforeSubmit(c *gin.Context, apiKe
 		model, moderationBody = parsed.Model, parsed.ModerationBody()
 	}
 	if len(moderationBody) == 0 {
+		if decision := h.openAI.checkCyberSessionBlockBeforeAudit(c, apiKey, model, body); decision != nil && !decision.AllowNextStage {
+			h.openAI.openAISecurityAuditError(c, decision)
+			return false
+		}
 		c.Set(securityAuditCompletedContextKey, true)
 		return true
 	}
 	reqLog := requestLogger(c, "handler.async_image.security_audit",
 		zap.Int64("user_id", subject.UserID), zap.Int64("api_key_id", apiKey.ID), zap.String("model", model))
-	decision := h.openAI.checkSecurityAudit(c, reqLog, apiKey, subject, service.ContentModerationProtocolOpenAIImages, model, moderationBody)
+	decision := h.openAI.checkSecurityAuditWithSessionBody(c, reqLog, apiKey, subject, service.ContentModerationProtocolOpenAIImages, model, moderationBody, body)
 	if decision != nil && !decision.AllowNextStage {
 		h.openAI.openAISecurityAuditError(c, decision)
 		return false

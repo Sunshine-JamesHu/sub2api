@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"crypto/sha256"
 	"net/http"
 	"strings"
@@ -15,6 +16,12 @@ import (
 const securityAuditCompletedContextKey = "sub2api.security_audit.completed"
 const securityAuditWSTurnContextKey = "sub2api.security_audit.ws_turn"
 const securityAuditWSDedupeContextKey = "sub2api.security_audit.ws_dedupe"
+const cyberSessionBlockedErrorCode = "session_blocked_by_cyber_policy"
+
+type cyberSessionBlocker interface {
+	IsCyberSessionBlocked(context.Context, string) bool
+	MarkCyberSessionBlocked(context.Context, string)
+}
 
 type securityAuditWSDedupeEntry struct {
 	stage    string
@@ -55,14 +62,90 @@ func (h *OpenAIGatewayHandler) checkSecurityAudit(c *gin.Context, reqLog *zap.Lo
 	if h == nil {
 		return nil
 	}
-	return runSecurityAudit(c, reqLog, h.securityAuditCoordinator, h.contentModerationService, apiKey, subject, protocol, model, body, "http")
+	return h.checkSecurityAuditWithSessionBody(c, reqLog, apiKey, subject, protocol, model, body, body)
 }
 
 func (h *OpenAIGatewayHandler) checkSecurityAuditStage(c *gin.Context, reqLog *zap.Logger, apiKey *service.APIKey, subject middleware2.AuthSubject, protocol, model string, body []byte, stage string) *securityaudit.Decision {
 	if h == nil {
 		return nil
 	}
-	return runSecurityAudit(c, reqLog, h.securityAuditCoordinator, h.contentModerationService, apiKey, subject, protocol, model, body, stage)
+	return h.checkSecurityAuditStageWithSessionBody(c, reqLog, apiKey, subject, protocol, model, body, body, stage)
+}
+
+// checkSecurityAuditWithSessionBody keeps the body sent to the audit engine
+// separate from the original request body used to locate an explicit session.
+// This matters for media handlers, whose moderation payload intentionally omits
+// transport fields such as prompt_cache_key.
+func (h *OpenAIGatewayHandler) checkSecurityAuditWithSessionBody(c *gin.Context, reqLog *zap.Logger, apiKey *service.APIKey, subject middleware2.AuthSubject, protocol, model string, auditBody, sessionBody []byte) *securityaudit.Decision {
+	return h.checkSecurityAuditStageWithSessionBody(c, reqLog, apiKey, subject, protocol, model, auditBody, sessionBody, "http")
+}
+
+func (h *OpenAIGatewayHandler) checkSecurityAuditStageWithSessionBody(c *gin.Context, reqLog *zap.Logger, apiKey *service.APIKey, subject middleware2.AuthSubject, protocol, model string, auditBody, sessionBody []byte, stage string) *securityaudit.Decision {
+	if h == nil {
+		return nil
+	}
+
+	if decision := h.checkCyberSessionBlockBeforeAudit(c, apiKey, model, sessionBody); decision != nil {
+		return decision
+	}
+
+	blocker, sessionBlockKey := h.cyberSessionBlockerFor(c, apiKey, sessionBody)
+	decision := runSecurityAudit(c, reqLog, h.securityAuditCoordinator, h.contentModerationService, apiKey, subject, protocol, model, auditBody, stage)
+	if decision != nil && decision.Kind == securityaudit.DecisionBlock && blocker != nil && sessionBlockKey != "" {
+		blocker.MarkCyberSessionBlocked(securityAuditRequestContext(c), sessionBlockKey)
+	}
+	return decision
+}
+
+// checkCyberSessionBlockBeforeAudit performs only the local session precheck.
+// It is used by media endpoints that intentionally had no audit payload before
+// this feature, so enabling session blocks does not make their no-audit path
+// invoke the coordinator.
+func (h *OpenAIGatewayHandler) checkCyberSessionBlockBeforeAudit(c *gin.Context, apiKey *service.APIKey, model string, sessionBody []byte) *securityaudit.Decision {
+	if h == nil {
+		return nil
+	}
+	blocker, sessionBlockKey := h.cyberSessionBlockerFor(c, apiKey, sessionBody)
+	if blocker == nil || sessionBlockKey == "" || !blocker.IsCyberSessionBlocked(securityAuditRequestContext(c), sessionBlockKey) {
+		return nil
+	}
+	h.enqueueCyberSessionBlockedOpsEntry(c, apiKey, model, sessionBlockKey)
+	return cyberSessionBlockedSecurityAuditDecision()
+}
+
+func (h *OpenAIGatewayHandler) cyberSessionBlockerFor(c *gin.Context, apiKey *service.APIKey, body []byte) (cyberSessionBlocker, string) {
+	if h == nil || apiKey == nil {
+		return nil, ""
+	}
+	blocker := h.sessionBlocker
+	if blocker == nil {
+		blocker = h.gatewayService
+	}
+	if blocker == nil {
+		return nil, ""
+	}
+	return blocker, service.CyberSessionBlockKey(apiKey.ID, c, body)
+}
+
+func securityAuditRequestContext(c *gin.Context) context.Context {
+	if c != nil && c.Request != nil {
+		return c.Request.Context()
+	}
+	return context.Background()
+}
+
+func cyberSessionBlockedSecurityAuditDecision() *securityaudit.Decision {
+	return &securityaudit.Decision{
+		Kind:           securityaudit.DecisionBlock,
+		HTTPStatus:     http.StatusForbidden,
+		ErrorCode:      cyberSessionBlockedErrorCode,
+		ClientMessage:  cyberSessionBlockedClientMsg,
+		AllowNextStage: false,
+	}
+}
+
+func isCyberSessionBlockedSecurityAuditDecision(decision *securityaudit.Decision) bool {
+	return decision != nil && decision.Kind == securityaudit.DecisionBlock && decision.ErrorCode == cyberSessionBlockedErrorCode
 }
 
 func runSecurityAudit(c *gin.Context, reqLog *zap.Logger, coordinator *securityaudit.Coordinator, legacy *service.ContentModerationService, apiKey *service.APIKey, subject middleware2.AuthSubject, protocol, model string, body []byte, stage string) *securityaudit.Decision {

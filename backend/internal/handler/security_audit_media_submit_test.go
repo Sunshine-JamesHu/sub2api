@@ -62,6 +62,33 @@ func securityAuditMediaTestMiddleware(c *gin.Context) {
 	c.Next()
 }
 
+func newSecurityAuditMediaTestContext(t *testing.T, platform, path, body string) (*gin.Context, *httptest.ResponseRecorder) {
+	t.Helper()
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+	groupID := int64(3)
+	user := &service.User{ID: 7, Username: "media-user", Email: "media@example.test"}
+	c.Set(string(middleware2.ContextKeyAPIKey), &service.APIKey{
+		ID: 9, UserID: 7, User: user, Name: "media-key", GroupID: &groupID,
+		Group: &service.Group{ID: groupID, Name: "media-group", Platform: platform, AllowImageGeneration: true},
+	})
+	c.Set(string(middleware2.ContextKeyUser), middleware2.AuthSubject{UserID: 7, Concurrency: 2})
+	return c, recorder
+}
+
+func newPreblockedSecurityAuditMediaHandler(engine *handlerPromptEngine, blocker cyberSessionBlocker) *OpenAIGatewayHandler {
+	return &OpenAIGatewayHandler{
+		gatewayService:           &service.OpenAIGatewayService{},
+		billingCacheService:      &service.BillingCacheService{},
+		apiKeyService:            &service.APIKeyService{},
+		concurrencyHelper:        &ConcurrencyHelper{concurrencyService: &service.ConcurrencyService{}},
+		securityAuditCoordinator: securityaudit.NewCoordinator(nil, engine),
+		sessionBlocker:           blocker,
+	}
+}
+
 func blockingHandlerPromptEngine() *handlerPromptEngine {
 	return &handlerPromptEngine{mode: securityaudit.ModeBlocking, decision: &securityaudit.PromptDecision{
 		Kind: securityaudit.DecisionBlock, ErrorCode: securityaudit.ErrorCodeBlocked, AllowNextStage: false,
@@ -168,6 +195,116 @@ func TestBatchImagePromptGuardRunsBeforePersistenceOrBilling(t *testing.T) {
 	require.Contains(t, string(requests[0].Body), "blocked batch prompt")
 	require.NotContains(t, string(requests[0].Body), "BINARY_CANARY")
 	require.NotContains(t, string(requests[0].Body), "QklOQVJZX0NBTkFSWQ==")
+}
+
+func TestBatchImagePreblockedSessionUsesRawPromptCacheKey(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	engine := &handlerPromptEngine{mode: securityaudit.ModeBlocking, decision: &securityaudit.PromptDecision{
+		Kind: securityaudit.DecisionAllow, AllowNextStage: true,
+	}}
+	blocker := &fakeHandlerCyberSessionBlocker{}
+	blocker.blocked.Store(true)
+	openAI := &OpenAIGatewayHandler{
+		securityAuditCoordinator: securityaudit.NewCoordinator(nil, engine),
+		sessionBlocker:           blocker,
+	}
+	h := &BatchImageHandler{openAI: openAI}
+	router := gin.New()
+	router.Use(securityAuditMediaTestMiddleware)
+	router.POST("/v1/images/batches", h.Submit)
+	request := httptest.NewRequest(http.MethodPost, "/v1/images/batches", strings.NewReader(`{
+		"model":"gemini-image-test",
+		"prompt_cache_key":"batch-raw-session",
+		"items":[{"custom_id":"one","prompt":"audit payload does not retain the session key"}]
+	}`))
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+
+	require.Equal(t, http.StatusForbidden, recorder.Code)
+	require.Contains(t, recorder.Body.String(), cyberSessionBlockedErrorCode)
+	evaluated, _, _ := engine.snapshot()
+	require.Zero(t, evaluated, "preblocked raw prompt_cache_key must skip the audit coordinator")
+}
+
+func TestMediaHandlersPreblockedSessionUseRawPromptCacheKey(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, tc := range []struct {
+		name     string
+		platform string
+		path     string
+		body     string
+		handle   func(*OpenAIGatewayHandler, *gin.Context)
+	}{
+		{
+			name:     "images",
+			platform: service.PlatformOpenAI,
+			path:     "/v1/images/generations",
+			body:     `{"model":"gpt-image-2","prompt":"audit payload omits prompt cache key","prompt_cache_key":"image-raw-session"}`,
+			handle: func(h *OpenAIGatewayHandler, c *gin.Context) {
+				h.Images(c)
+			},
+		},
+		{
+			name:     "grok media",
+			platform: service.PlatformGrok,
+			path:     "/v1/images/generations",
+			body:     `{"model":"grok-imagine-image","prompt":"audit payload omits prompt cache key","prompt_cache_key":"grok-media-raw-session"}`,
+			handle: func(h *OpenAIGatewayHandler, c *gin.Context) {
+				h.GrokImages(c)
+			},
+		},
+		{
+			name:     "grok tts",
+			platform: service.PlatformGrok,
+			path:     "/v1/audio/speech",
+			body:     `{"model":"grok-tts","input":"audit payload omits prompt cache key","prompt_cache_key":"grok-tts-raw-session"}`,
+			handle: func(h *OpenAIGatewayHandler, c *gin.Context) {
+				h.GrokVoice(c, "tts")
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			engine := &handlerPromptEngine{mode: securityaudit.ModeBlocking, decision: &securityaudit.PromptDecision{
+				Kind: securityaudit.DecisionAllow, AllowNextStage: true,
+			}}
+			blocker := &fakeHandlerCyberSessionBlocker{}
+			blocker.blocked.Store(true)
+			h := newPreblockedSecurityAuditMediaHandler(engine, blocker)
+			c, recorder := newSecurityAuditMediaTestContext(t, tc.platform, tc.path, tc.body)
+
+			tc.handle(h, c)
+
+			require.Equal(t, http.StatusForbidden, recorder.Code)
+			require.Contains(t, recorder.Body.String(), cyberSessionBlockedErrorCode)
+			evaluated, _, _ := engine.snapshot()
+			require.Zero(t, evaluated, "preblocked raw prompt_cache_key must skip the audit coordinator")
+		})
+	}
+}
+
+func TestAsyncImagePreblockedSessionUsesRawPromptCacheKey(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	store := &asyncImageMemoryStore{tasks: map[string]*service.ImageTaskRecord{}}
+	tasks := service.NewImageTaskServiceWithUploader(store, nil, time.Hour, time.Minute)
+	engine := &handlerPromptEngine{mode: securityaudit.ModeBlocking, decision: &securityaudit.PromptDecision{
+		Kind: securityaudit.DecisionAllow, AllowNextStage: true,
+	}}
+	blocker := &fakeHandlerCyberSessionBlocker{}
+	blocker.blocked.Store(true)
+	openAI := newPreblockedSecurityAuditMediaHandler(engine, blocker)
+	h := &AsyncImageHandler{tasks: tasks, openAI: openAI, execute: func(string, *gin.Context) {
+		t.Fatal("a preblocked async request must not execute")
+	}}
+	c, recorder := newSecurityAuditMediaTestContext(t, service.PlatformOpenAI, "/v1/images/generations/async", `{"model":"gpt-image-2","prompt":"audit payload omits prompt cache key","prompt_cache_key":"async-image-raw-session"}`)
+
+	h.Submit(c)
+
+	require.Equal(t, http.StatusForbidden, recorder.Code)
+	require.Contains(t, recorder.Body.String(), cyberSessionBlockedErrorCode)
+	require.Empty(t, store.tasks, "a preblocked async request must not create a task")
+	evaluated, _, _ := engine.snapshot()
+	require.Zero(t, evaluated, "preblocked raw prompt_cache_key must skip the audit coordinator")
 }
 
 func TestSecurityAuditBlockingFailuresLeaveAllDownstreamCountersAtZero(t *testing.T) {
