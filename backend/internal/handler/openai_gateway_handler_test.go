@@ -1535,6 +1535,67 @@ func TestOpenAIResponsesWebSocket_CtxPoolAppliesPerTurnMappingAndPreservesReques
 		"BillingModelSourceRequested must use the client model before channel mapping")
 }
 
+func TestOpenAIResponsesWebSocket_CyberPolicySecondTurnMarksPerTurnSessionKey(t *testing.T) {
+	firstPayload := `{"type":"response.create","model":"gpt-5.4","stream":false,"prompt_cache_key":"first-frame-session"}`
+	secondPayload := `{"type":"response.create","model":"gpt-5.4","stream":false,"prompt_cache_key":"second-turn-session"}`
+	blocker := &openAIWSUsageCyberBlocker{}
+
+	got := runOpenAIResponsesWebSocketUsageLogCase(t, openAIResponsesWSUsageLogCase{
+		firstPayload:          firstPayload,
+		secondPayload:         secondPayload,
+		secondTurnCyberPolicy: true,
+		sessionBlocker:        blocker,
+		ingressMode:            service.OpenAIWSIngressModeCtxPool,
+	})
+
+	firstKey := service.CyberSessionBlockKey(1801, nil, []byte(firstPayload))
+	secondKey := service.CyberSessionBlockKey(1801, nil, []byte(secondPayload))
+	require.NotEmpty(t, firstKey)
+	require.NotEmpty(t, secondKey)
+	require.NotEqual(t, firstKey, secondKey)
+
+	require.Equal(t, []string{firstKey, secondKey}, blocker.checkedKeys(),
+		"每个 turn 的本地预检都必须使用该 turn 自己的显式会话标识")
+
+	require.Eventually(t, func() bool {
+		keys := got.cyberBlockStore.keys()
+		return len(keys) == 1 && keys[0] == secondKey
+	}, 3*time.Second, 10*time.Millisecond,
+		"第二个 turn 命中上游 cyber_policy 后必须封禁该 turn 的显式会话")
+
+	require.Len(t, got.logs, 2)
+	require.Equal(t, service.RequestTypeCyberBlocked, got.logs[1].RequestType,
+		"cyber turn 的用量行必须标记为 cyber")
+	require.Len(t, got.clientEvents, 2)
+	require.Equal(t, "response.failed", gjson.GetBytes(got.clientEvents[1], "type").String())
+	require.Equal(t, "cyber_policy", gjson.GetBytes(got.clientEvents[1], "response.error.code").String())
+}
+
+func TestOpenAIResponsesWebSocket_CyberPolicySecondTurnWithoutExplicitSessionWritesNoLock(t *testing.T) {
+	firstPayload := `{"type":"response.create","model":"gpt-5.4","stream":false,"prompt_cache_key":"first-frame-session"}`
+	secondPayload := `{"type":"response.create","model":"gpt-5.4","stream":false,"previous_response_id":"resp_usage_e2e_1"}`
+	blocker := &openAIWSUsageCyberBlocker{}
+
+	got := runOpenAIResponsesWebSocketUsageLogCase(t, openAIResponsesWSUsageLogCase{
+		firstPayload:          firstPayload,
+		secondPayload:         secondPayload,
+		secondTurnCyberPolicy: true,
+		sessionBlocker:        blocker,
+		ingressMode:            service.OpenAIWSIngressModeCtxPool,
+	})
+
+	firstKey := service.CyberSessionBlockKey(1801, nil, []byte(firstPayload))
+	require.Equal(t, []string{firstKey}, blocker.checkedKeys(),
+		"无显式会话标识的 turn 必须跳过本地预检")
+
+	require.Len(t, got.logs, 2)
+	require.Equal(t, service.RequestTypeCyberBlocked, got.logs[1].RequestType)
+	require.Eventually(t, func() bool {
+		return len(got.cyberBlockStore.keys()) == 0
+	}, 3*time.Second, 10*time.Millisecond,
+		"仅 previous_response_id 的 turn 不得派生会话封禁 key")
+}
+
 func TestOpenAIWSTurnBillingModelPreservesImagePricingModel(t *testing.T) {
 	tests := []struct {
 		name             string
@@ -1773,6 +1834,8 @@ type openAIResponsesWSUsageLogCase struct {
 	billingModelSource        string
 	accountModelMapping       map[string]any
 	afterFirstUpstreamRequest func(channelSvc *service.ChannelService) error
+	secondTurnCyberPolicy     bool
+	sessionBlocker            cyberSessionBlocker
 }
 
 type openAIResponsesWSUsageLogResult struct {
@@ -1781,6 +1844,7 @@ type openAIResponsesWSUsageLogResult struct {
 	upstreamFirstPayload []byte
 	upstreamPayloads     [][]byte
 	clientEvents         [][]byte
+	cyberBlockStore      *openAIWSUsageCyberBlockStore
 }
 
 type openAIWSUsageHandlerAccountRepoStub struct {
@@ -1951,6 +2015,120 @@ func (s *openAIWSUsageHandlerUsageLogRepoStub) Create(ctx context.Context, log *
 		s.created <- log
 	}
 	return true, nil
+}
+
+type openAIWSUsageCyberBlocker struct {
+	mu     sync.Mutex
+	checks []string
+	marks  []string
+}
+
+func (b *openAIWSUsageCyberBlocker) IsCyberSessionBlocked(_ context.Context, key string) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.checks = append(b.checks, key)
+	return false
+}
+
+func (b *openAIWSUsageCyberBlocker) MarkCyberSessionBlocked(_ context.Context, key string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.marks = append(b.marks, key)
+}
+
+func (b *openAIWSUsageCyberBlocker) checkedKeys() []string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([]string(nil), b.checks...)
+}
+
+func (b *openAIWSUsageCyberBlocker) markedKeys() []string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([]string(nil), b.marks...)
+}
+
+type openAIWSUsageCyberBlockStore struct {
+	mu      sync.Mutex
+	blocked map[string]bool
+}
+
+func (s *openAIWSUsageCyberBlockStore) SetCyberSessionBlocked(_ context.Context, key string, _ time.Duration) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.blocked == nil {
+		s.blocked = make(map[string]bool)
+	}
+	s.blocked[key] = true
+	return nil
+}
+
+func (s *openAIWSUsageCyberBlockStore) IsCyberSessionBlocked(_ context.Context, key string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.blocked[key], nil
+}
+
+func (s *openAIWSUsageCyberBlockStore) keys() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]string, 0, len(s.blocked))
+	for key, blocked := range s.blocked {
+		if blocked {
+			out = append(out, key)
+		}
+	}
+	return out
+}
+
+type openAIWSUsageComboCache struct {
+	store *openAIWSUsageCyberBlockStore
+}
+
+var _ service.GatewayCache = (*openAIWSUsageComboCache)(nil)
+var _ service.CyberSessionBlockStore = (*openAIWSUsageComboCache)(nil)
+
+func (c *openAIWSUsageComboCache) GetSessionAccountID(context.Context, int64, string) (int64, error) {
+	return 0, service.ErrStickySessionNotFound
+}
+func (c *openAIWSUsageComboCache) SetSessionAccountID(context.Context, int64, string, int64, time.Duration) error {
+	return nil
+}
+func (c *openAIWSUsageComboCache) RefreshSessionTTL(context.Context, int64, string, time.Duration) error {
+	return nil
+}
+func (c *openAIWSUsageComboCache) DeleteSessionAccountID(context.Context, int64, string) error {
+	return nil
+}
+func (c *openAIWSUsageComboCache) SetGrokVideoPendingBilling(context.Context, string, []byte, time.Duration) error {
+	return nil
+}
+func (c *openAIWSUsageComboCache) GetGrokVideoPendingBilling(context.Context, string) ([]byte, error) {
+	return nil, nil
+}
+func (c *openAIWSUsageComboCache) ClaimGrokVideoBilled(context.Context, string, time.Duration) (bool, error) {
+	return true, nil
+}
+func (c *openAIWSUsageComboCache) ReleaseGrokVideoBilled(context.Context, string) error {
+	return nil
+}
+func (c *openAIWSUsageComboCache) SetCyberSessionBlocked(ctx context.Context, key string, ttl time.Duration) error {
+	return c.store.SetCyberSessionBlocked(ctx, key, ttl)
+}
+func (c *openAIWSUsageComboCache) IsCyberSessionBlocked(ctx context.Context, key string) (bool, error) {
+	return c.store.IsCyberSessionBlocked(ctx, key)
+}
+
+type openAIWSUsageSettingRepo struct {
+	service.SettingRepository
+	vals map[string]string
+}
+
+func (r *openAIWSUsageSettingRepo) GetValue(_ context.Context, key string) (string, error) {
+	if v, ok := r.vals[key]; ok {
+		return v, nil
+	}
+	return "", service.ErrSettingNotFound
 }
 
 type openAIWSUsageHandlerChannelRepoStub struct {
@@ -2735,6 +2913,9 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 				turn,
 				gjson.GetBytes(payload, "model").String(),
 			)
+			if turn == 2 && tc.secondTurnCyberPolicy {
+				response = `{"type":"response.failed","response":{"id":"resp_usage_e2e_2","status":"failed","error":{"code":"cyber_policy","message":"blocked by cyber policy"}}}`
+			}
 			writeCtx, cancelWrite := context.WithTimeout(r.Context(), 3*time.Second)
 			writeErr := conn.Write(writeCtx, coderws.MessageText, []byte(response))
 			cancelWrite()
@@ -2801,6 +2982,14 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 	}
 
 	billingCacheSvc := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
+	cyberBlockStore := &openAIWSUsageCyberBlockStore{}
+	comboCache := &openAIWSUsageComboCache{store: cyberBlockStore}
+	settingSvc := service.NewSettingService(&openAIWSUsageSettingRepo{
+		vals: map[string]string{
+			service.SettingKeyCyberSessionBlockEnabled:    "true",
+			service.SettingKeyCyberSessionBlockTTLSeconds: "3600",
+		},
+	}, &config.Config{})
 	gatewaySvc := service.NewOpenAIGatewayService(
 		accountRepo,
 		usageRepo,
@@ -2808,7 +2997,7 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 		nil,
 		nil,
 		nil,
-		nil,
+		comboCache,
 		cfg,
 		nil,
 		nil,
@@ -2822,7 +3011,7 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 		nil,
 		channelSvc,
 		nil,
-		nil,
+		settingSvc,
 		nil, // userPlatformQuotaRepo
 	)
 
@@ -2839,6 +3028,7 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 		billingCacheService: billingCacheSvc,
 		apiKeyService:       &service.APIKeyService{},
 		concurrencyHelper:   NewConcurrencyHelper(service.NewConcurrencyService(cache), SSEPingFormatNone, time.Second),
+		sessionBlocker:      tc.sessionBlocker,
 	}
 
 	apiKey := &service.APIKey{
@@ -2878,12 +3068,18 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 	require.NoError(t, err)
 
 	clientEvents := make([][]byte, 0, turnCount)
+	readIndex := 0
 	readCompleted := func() {
+		readIndex++
 		readCtx, cancelRead := context.WithTimeout(context.Background(), 3*time.Second)
 		_, event, readErr := clientConn.Read(readCtx)
 		cancelRead()
 		require.NoError(t, readErr)
-		require.Equal(t, "response.completed", gjson.GetBytes(event, "type").String())
+		expectedType := "response.completed"
+		if readIndex == 2 && tc.secondTurnCyberPolicy {
+			expectedType = "response.failed"
+		}
+		require.Equal(t, expectedType, gjson.GetBytes(event, "type").String())
 		clientEvents = append(clientEvents, append([]byte(nil), event...))
 	}
 	readCompleted()
@@ -2930,6 +3126,7 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 		upstreamFirstPayload: upstreamPayloads[0],
 		upstreamPayloads:     upstreamPayloads,
 		clientEvents:         clientEvents,
+		cyberBlockStore:      cyberBlockStore,
 	}
 }
 

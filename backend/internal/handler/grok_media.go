@@ -114,6 +114,16 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 	setOpsRequestContext(c, requestModel, false)
 	setOpsEndpointContext(c, "", int16(service.RequestTypeSync))
 
+	// Video status/content lookups do not have an audit payload, but they still
+	// carry the client's explicit session headers. Check the local session lock
+	// before acquiring concurrency, billing, or an upstream account.
+	if !endpoint.IsGenerationRequest() {
+		if decision := h.checkCyberSessionBlockBeforeAudit(c, apiKey, requestModel, body); decision != nil && !decision.AllowNextStage {
+			h.openAISecurityAuditError(c, decision)
+			return
+		}
+	}
+
 	if endpoint.IsGenerationRequest() {
 		if !service.GroupAllowsImageGeneration(apiKey.Group) {
 			h.errorResponse(c, http.StatusForbidden, "permission_error", service.ImageGenerationPermissionMessage())

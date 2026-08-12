@@ -51,6 +51,40 @@ type openAIWSTurnChannelMappingSnapshot struct {
 	mapping service.ChannelMappingResult
 }
 
+// openAICyberSessionTurnKeys keeps the explicit session identity used by each
+// Responses WebSocket turn. BeforeRequest and AfterTurn may run on different
+// relay goroutines, so the map must not be read or written without a mutex.
+type openAICyberSessionTurnKeys struct {
+	mu   sync.Mutex
+	keys map[int]string
+}
+
+func newOpenAICyberSessionTurnKeys(firstKey string) *openAICyberSessionTurnKeys {
+	keys := &openAICyberSessionTurnKeys{keys: make(map[int]string, 1)}
+	keys.keys[1] = firstKey
+	return keys
+}
+
+func (keys *openAICyberSessionTurnKeys) set(turn int, key string) {
+	if keys == nil || turn <= 0 {
+		return
+	}
+	keys.mu.Lock()
+	keys.keys[turn] = key
+	keys.mu.Unlock()
+}
+
+func (keys *openAICyberSessionTurnKeys) take(turn int) string {
+	if keys == nil || turn <= 0 {
+		return ""
+	}
+	keys.mu.Lock()
+	key := keys.keys[turn]
+	delete(keys.keys, turn)
+	keys.mu.Unlock()
+	return key
+}
+
 var errOpenAIWSUnsupportedModelSwitch = errors.New("selected account does not support websocket model switch")
 
 func newOpenAIWSUnsupportedModelSwitchError(model string) error {
@@ -1734,6 +1768,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 	// cyber_policy mark. The security-audit wrapper already checked this payload
 	// (including prompt_cache_key) before any coordinator or routing work.
 	cyberBlockKey := service.CyberSessionBlockKey(apiKey.ID, c, firstMessage)
+	cyberTurnKeys := newOpenAICyberSessionTurnKeys(cyberBlockKey)
 	cyberBlockedThisConn := false
 
 	// 解析渠道级模型映射
@@ -2034,6 +2069,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 					writeSecurityAuditWSError(ctx, wsConn, decision)
 					return service.NewOpenAIWSClientCloseError(securityAuditWSCloseStatus(decision), securityAuditWSCloseReason(decision), nil)
 				}
+				cyberTurnKeys.set(turn, service.CyberSessionBlockKey(apiKey.ID, c, payload))
 				return nil
 			},
 			MapRequestModel: func(turn int, originalModel string) (string, error) {
@@ -2127,7 +2163,8 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 					turnUpstreamModel = turnRequestedModel
 				}
 				turnUsageFields := turnMapping.ToUsageFields(turnRequestedModel, turnUpstreamModel)
-				h.recordCyberPolicyIfMarked(c, apiKey, account, subscription, turnRequestedModel, turnErr != nil, cyberBlockKey, turnUsageFields, requestPayloadHash)
+				turnCyberBlockKey := cyberTurnKeys.take(turn)
+				h.recordCyberPolicyIfMarked(c, apiKey, account, subscription, turnRequestedModel, turnErr != nil, turnCyberBlockKey, turnUsageFields, requestPayloadHash)
 				if service.GetOpsCyberPolicy(c) != nil {
 					cyberBlockedThisConn = true
 				}
