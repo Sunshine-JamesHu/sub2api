@@ -91,7 +91,7 @@ func (h *OpenAIGatewayHandler) checkSecurityAuditStageWithSessionBody(c *gin.Con
 
 	blocker, sessionBlockKey := h.cyberSessionBlockerFor(c, apiKey, sessionBody)
 	decision := runSecurityAudit(c, reqLog, h.securityAuditCoordinator, h.contentModerationService, apiKey, subject, protocol, model, auditBody, stage)
-	if decision != nil && decision.Kind == securityaudit.DecisionBlock && blocker != nil && sessionBlockKey != "" {
+	if decision != nil && decision.Kind == securityaudit.DecisionBlock && h.contentModerationService != nil && h.contentModerationService.LockSessionAfterBlock(securityAuditRequestContext(c)) && blocker != nil && sessionBlockKey != "" {
 		blocker.MarkCyberSessionBlocked(securityAuditRequestContext(c), sessionBlockKey)
 	}
 	return decision

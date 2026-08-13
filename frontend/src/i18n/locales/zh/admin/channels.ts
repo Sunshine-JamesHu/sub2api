@@ -209,6 +209,8 @@ export default {
       statusFailed: '加载运行状态失败',
       enabled: '开启内容审计',
       enabledHint: '关闭后即使风控中心菜单启用，也不会审核网关请求。',
+      lockSessionAfterBlock: '拦截后锁定 Session',
+      lockSessionAfterBlockHint: '仅在系统设置已开启 cyber 会话自动屏蔽时生效；关闭后只拦截当前请求，不锁定会话。',
       mode: '全局模式',
       modePreBlock: '前置拦截',
       modePreBlockDesc: '每次请求先同步审核最新用户输入，命中后立即拒绝请求。',

@@ -1873,3 +1873,23 @@ func TestContentModerationUpdateConfig_CyberPolicyExcludeFromBanCount(t *testing
 	require.NoError(t, err)
 	require.False(t, view.CyberPolicyExcludeFromBanCount)
 }
+
+func TestContentModerationUpdateConfig_LockSessionAfterBlock(t *testing.T) {
+	settingRepo := &contentModerationTestSettingRepo{values: map[string]string{}}
+	svc := NewContentModerationService(settingRepo, nil, nil, nil, nil, nil, nil, nil)
+
+	view, err := svc.GetConfig(context.Background())
+	require.NoError(t, err)
+	require.False(t, view.LockSessionAfterBlock)
+	require.False(t, svc.LockSessionAfterBlock(context.Background()))
+
+	lock := true
+	view, err = svc.UpdateConfig(context.Background(), UpdateContentModerationConfigInput{LockSessionAfterBlock: &lock})
+	require.NoError(t, err)
+	require.True(t, view.LockSessionAfterBlock)
+	require.True(t, svc.LockSessionAfterBlock(context.Background()))
+
+	var saved ContentModerationConfig
+	require.NoError(t, json.Unmarshal([]byte(settingRepo.values[SettingKeyContentModerationConfig]), &saved))
+	require.True(t, saved.LockSessionAfterBlock)
+}

@@ -172,6 +172,7 @@ type ContentModerationConfig struct {
 	// 当次不判定封号，且历史 cyber 行在 CountFlaggedByUserSince 中被排除。
 	// 默认 false（计入，与历史行为一致；旧配置 JSON 无此字段时反序列化为 false）。
 	CyberPolicyExcludeFromBanCount bool `json:"cyber_policy_exclude_from_ban_count"`
+	LockSessionAfterBlock          bool `json:"lock_session_after_block"`
 }
 
 type ContentModerationConfigView struct {
@@ -207,6 +208,7 @@ type ContentModerationConfigView struct {
 	KeywordBlockingMode            string                          `json:"keyword_blocking_mode"`
 	ModelFilter                    ContentModerationModelFilter    `json:"model_filter"`
 	CyberPolicyExcludeFromBanCount bool                            `json:"cyber_policy_exclude_from_ban_count"`
+	LockSessionAfterBlock          bool                            `json:"lock_session_after_block"`
 }
 
 type ContentModerationAPIKeyStatus struct {
@@ -299,6 +301,7 @@ type UpdateContentModerationConfigInput struct {
 	KeywordBlockingMode            *string                       `json:"keyword_blocking_mode"`
 	ModelFilter                    *ContentModerationModelFilter `json:"model_filter"`
 	CyberPolicyExcludeFromBanCount *bool                         `json:"cyber_policy_exclude_from_ban_count"`
+	LockSessionAfterBlock          *bool                         `json:"lock_session_after_block"`
 }
 
 type ContentModerationModelFilter struct {
@@ -698,6 +701,9 @@ func (s *ContentModerationService) UpdateConfig(ctx context.Context, input Updat
 	}
 	if input.CyberPolicyExcludeFromBanCount != nil {
 		cfg.CyberPolicyExcludeFromBanCount = *input.CyberPolicyExcludeFromBanCount
+	}
+	if input.LockSessionAfterBlock != nil {
+		cfg.LockSessionAfterBlock = *input.LockSessionAfterBlock
 	}
 	if input.Thresholds != nil {
 		cfg.Thresholds = mergeContentModerationThresholds(ContentModerationDefaultThresholds(), *input.Thresholds)
@@ -2439,7 +2445,19 @@ func (s *ContentModerationService) configView(cfg *ContentModerationConfig) *Con
 		KeywordBlockingMode:            cfg.KeywordBlockingMode,
 		ModelFilter:                    cloneContentModerationModelFilter(cfg.ModelFilter),
 		CyberPolicyExcludeFromBanCount: cfg.CyberPolicyExcludeFromBanCount,
+		LockSessionAfterBlock:          cfg.LockSessionAfterBlock,
 	}
+}
+
+// LockSessionAfterBlock returns the locally configured policy for converting a
+// hard audit block into a session lock. Configuration read failures are
+// deliberately fail-open.
+func (s *ContentModerationService) LockSessionAfterBlock(ctx context.Context) bool {
+	if s == nil {
+		return false
+	}
+	cfg, err := s.loadConfig(ctx)
+	return err == nil && cfg != nil && cfg.LockSessionAfterBlock
 }
 
 func (s *ContentModerationService) apiKeyStatuses(keys []string) []ContentModerationAPIKeyStatus {

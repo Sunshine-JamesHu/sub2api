@@ -396,6 +396,13 @@
                 </div>
                 <Toggle v-model="configForm.enabled" />
               </div>
+              <div class="flex items-center justify-between rounded-lg border border-gray-100 p-4 dark:border-dark-700" :class="!cyberSessionBlockEnabled ? 'opacity-60' : ''">
+                <div>
+                  <p class="text-sm font-medium text-gray-900 dark:text-white">{{ t('admin.riskControl.lockSessionAfterBlock') }}</p>
+                  <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.lockSessionAfterBlockHint') }}</p>
+                </div>
+                <Toggle v-model="configForm.lock_session_after_block" :disabled="!cyberSessionBlockEnabled" />
+              </div>
               <div>
                 <label class="input-label">{{ t('admin.riskControl.mode') }}</label>
                 <Select v-model="configForm.mode" :options="modeOptions" />
@@ -1250,6 +1257,7 @@ const configForm = reactive({
   email_on_hit: true,
   auto_ban_enabled: true,
   cyber_policy_exclude_from_ban_count: false,
+  lock_session_after_block: false,
   ban_threshold: 10,
   violation_window_hours: 720,
   hit_retention_days: 180,
@@ -1261,6 +1269,7 @@ const configForm = reactive({
   model_filter_type: 'all' as ContentModerationModelFilterType,
   model_filter_models: [] as string[],
 })
+const cyberSessionBlockEnabled = ref(false)
 
 const pagination = reactive({
   page: 1,
@@ -1728,6 +1737,7 @@ function applyConfig(config: ContentModerationConfig) {
   configForm.email_on_hit = config.email_on_hit ?? true
   configForm.auto_ban_enabled = config.auto_ban_enabled ?? true
   configForm.cyber_policy_exclude_from_ban_count = config.cyber_policy_exclude_from_ban_count ?? false
+  configForm.lock_session_after_block = config.lock_session_after_block ?? false
   configForm.ban_threshold = config.ban_threshold || 10
   configForm.violation_window_hours = config.violation_window_hours || 720
   configForm.hit_retention_days = config.hit_retention_days || 180
@@ -1744,13 +1754,15 @@ function applyConfig(config: ContentModerationConfig) {
 async function loadAll() {
   loading.value = true
   try {
-    const [config, groupItems, runtimeStatus, proxyItems] = await Promise.all([
+    const [config, groupItems, runtimeStatus, proxyItems, systemSettings] = await Promise.all([
       adminAPI.riskControl.getConfig(),
       adminAPI.groups.getAll(),
       adminAPI.riskControl.getStatus(),
       // 代理列表加载失败不阻塞风控页面（仅影响下拉可选项）
       adminAPI.proxies.getAll().catch(() => [] as Proxy[]),
+      adminAPI.settings.getSettings().catch(() => ({ cyber_session_block_enabled: false })),
     ])
+    cyberSessionBlockEnabled.value = Boolean(systemSettings.cyber_session_block_enabled)
     applyConfig(config)
     groups.value = groupItems
     status.value = runtimeStatus
@@ -1814,6 +1826,7 @@ async function saveConfig() {
       email_on_hit: configForm.email_on_hit,
       auto_ban_enabled: configForm.auto_ban_enabled,
       cyber_policy_exclude_from_ban_count: configForm.cyber_policy_exclude_from_ban_count,
+      lock_session_after_block: configForm.lock_session_after_block,
       ban_threshold: Number(configForm.ban_threshold) || 10,
       violation_window_hours: Number(configForm.violation_window_hours) || 720,
       hit_retention_days: Number(configForm.hit_retention_days) || 180,

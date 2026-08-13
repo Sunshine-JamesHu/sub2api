@@ -220,7 +220,7 @@ func TestOpenAISecurityAuditOnlyRealBlocksMarkSession(t *testing.T) {
 		{name: "flag", kind: securityaudit.DecisionFlag},
 		{name: "unavailable", kind: securityaudit.DecisionUnavailable},
 		{name: "invalid", kind: securityaudit.DecisionInvalid},
-		{name: "block", kind: securityaudit.DecisionBlock, wantMarks: 1},
+		{name: "block", kind: securityaudit.DecisionBlock},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			engine := &turnCountingEngine{mode: securityaudit.ModeBlocking, decisions: []*securityaudit.PromptDecision{{
@@ -254,7 +254,7 @@ func TestOpenAISecurityAuditLegacyBlockMarksSession(t *testing.T) {
 	require.NotNil(t, decision)
 	require.Equal(t, securityaudit.DecisionBlock, decision.Kind)
 	require.NotNil(t, decision.Legacy)
-	require.Equal(t, int64(1), blocker.marks.Load())
+	require.Zero(t, blocker.marks.Load(), "session locking defaults to off until enabled in content moderation settings")
 }
 
 func TestOpenAISecurityAuditUsesOriginalSessionBody(t *testing.T) {

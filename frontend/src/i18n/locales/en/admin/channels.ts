@@ -209,6 +209,8 @@ export default {
       statusFailed: 'Failed to load runtime status',
       enabled: 'Enable Content Moderation',
       enabledHint: 'When off, gateway requests are not moderated even if the menu is enabled.',
+      lockSessionAfterBlock: 'Lock Session After Block',
+      lockSessionAfterBlockHint: 'Works only when the system cyber session blocking switch is enabled; otherwise only the current request is blocked.',
       mode: 'Global Mode',
       modePreBlock: 'Pre-Block',
       modePreBlockDesc: 'Synchronously reviews the latest user input before every request and rejects hits immediately.',
