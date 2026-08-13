@@ -12,6 +12,8 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest/observer"
 )
 
 func TestCachesSecurityAuditCompletionSkipsWebSocketStages(t *testing.T) {
@@ -312,6 +314,34 @@ type staticSecurityAuditLegacyEngine struct {
 
 func (e staticSecurityAuditLegacyEngine) Check(context.Context, securityaudit.Request) (*securityaudit.LegacyDecision, error) {
 	return e.decision, nil
+}
+
+func TestRunSecurityAuditLogsWebSocketChecksAndCacheHits(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	engine := &turnCountingEngine{mode: securityaudit.ModeBlocking}
+	coordinator := securityaudit.NewCoordinator(nil, engine)
+	core, logs := observer.New(zap.InfoLevel)
+	reqLog := zap.New(core)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	c.Set(securityAuditWSTurnContextKey, 2)
+	payload := []byte(`{"type":"response.create","response":{"input":"same turn"}}`)
+
+	runSecurityAudit(c, reqLog, coordinator, nil, nil, middleware2.AuthSubject{UserID: 7}, "openai_responses", "gpt-test", payload, "subsequent_turn")
+	runSecurityAudit(c, reqLog, coordinator, nil, nil, middleware2.AuthSubject{UserID: 7}, "openai_responses", "gpt-test", payload, "subsequent_turn")
+
+	startLogs := logs.FilterMessage("security_audit.gateway_check_start").All()
+	require.Len(t, startLogs, 1)
+	require.Equal(t, false, startLogs[0].ContextMap()["cached"])
+
+	doneLogs := logs.FilterMessage("security_audit.gateway_check_done").All()
+	require.Len(t, doneLogs, 2)
+	require.Equal(t, false, doneLogs[0].ContextMap()["cached"])
+	require.Equal(t, true, doneLogs[1].ContextMap()["cached"])
+	require.Equal(t, "allow", doneLogs[1].ContextMap()["decision"])
+	require.Equal(t, "subsequent_turn", doneLogs[1].ContextMap()["stage"])
+	require.Equal(t, int64(1), engine.evaluates.Load())
 }
 
 type turnCountingEngine struct {
