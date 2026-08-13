@@ -1,4 +1,4 @@
-# =============================================================================
+﻿# =============================================================================
 # Sub2API Multi-Stage Dockerfile
 # =============================================================================
 # Stage 1: Build frontend
@@ -18,7 +18,11 @@ ARG GOSUMDB=sum.golang.google.cn
 FROM ${NODE_IMAGE} AS frontend-builder
 
 WORKDIR /app/frontend
-ENV NODE_OPTIONS=--max-old-space-size=1536
+
+# Node heap for vue-tsc + vite builds. Default matches the historical 1536MiB;
+# pass --build-arg NODE_MAX_OLD_SPACE=4096 for larger frontends/heaps.
+ARG NODE_MAX_OLD_SPACE=1536
+ENV NODE_OPTIONS=--max-old-space-size=${NODE_MAX_OLD_SPACE}
 
 # Install pnpm. Keep this pinned to the lockfile-compatible major version so
 # Docker builds remain reproducible when pnpm changes config validation rules.
