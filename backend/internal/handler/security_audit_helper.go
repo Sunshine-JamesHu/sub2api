@@ -23,6 +23,17 @@ type cyberSessionBlocker interface {
 	MarkCyberSessionBlocked(context.Context, string)
 }
 
+type gatewayCyberSessionBlockerAdapter struct{ service *service.OpenAIGatewayService }
+
+func (a gatewayCyberSessionBlockerAdapter) IsCyberSessionBlocked(ctx context.Context, key string) bool {
+	return a.service != nil && a.service.IsCyberSessionBlocked(ctx, key)
+}
+func (a gatewayCyberSessionBlockerAdapter) MarkCyberSessionBlocked(ctx context.Context, key string) {
+	if a.service != nil {
+		a.service.MarkCyberSessionBlockedLegacy(ctx, key)
+	}
+}
+
 type securityAuditWSDedupeEntry struct {
 	stage    string
 	turn     int
@@ -119,7 +130,7 @@ func (h *OpenAIGatewayHandler) cyberSessionBlockerFor(c *gin.Context, apiKey *se
 	}
 	blocker := h.sessionBlocker
 	if blocker == nil {
-		blocker = h.gatewayService
+		blocker = gatewayCyberSessionBlockerAdapter{service: h.gatewayService}
 	}
 	if blocker == nil {
 		return nil, ""
