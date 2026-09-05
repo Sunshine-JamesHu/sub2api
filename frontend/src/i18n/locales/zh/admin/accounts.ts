@@ -1556,7 +1556,14 @@ export default {
         todayTokens: '今日 Token',
         todayCost: '今日费用',
         usageTrend: '30天费用与请求趋势',
-        noData: '该账号暂无使用数据'
+        noData: '该账号暂无使用数据',
+        identityStats: '会话标识统计',
+        today: '今日',
+        last7Days: '近七天',
+        thisMonth: '本月',
+        sessionIDs: 'Session',
+        threadIDs: 'Thread',
+        windowIDs: 'Window'
       }
     },
 

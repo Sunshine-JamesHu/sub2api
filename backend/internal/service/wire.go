@@ -225,6 +225,7 @@ func ProvideAccountUsageService(
 	identityCache IdentityCache,
 	tlsFPProfileService *TLSFingerprintProfileService,
 	openAIGatewayService *OpenAIGatewayService,
+	accountStatsRedis *redis.Client,
 ) *AccountUsageService {
 	service := NewAccountUsageService(
 		accountRepo,
@@ -238,6 +239,7 @@ func ProvideAccountUsageService(
 		cache,
 		identityCache,
 		tlsFPProfileService,
+		accountStatsRedis,
 	)
 	service.agentIdentityWS = openAIGatewayService
 	return service

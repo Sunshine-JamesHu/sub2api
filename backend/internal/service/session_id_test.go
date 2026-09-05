@@ -153,3 +153,18 @@ func TestExtractClientSessionID_InjectionHeaderDropped(t *testing.T) {
 	c.Request.Header.Set("session_id", "abc\r\nX-Injected: 1")
 	require.Equal(t, "", ExtractClientSessionID(c))
 }
+
+func TestExtractClientIdentityIDsFromBody(t *testing.T) {
+	c := newSessionHeaderContext(t, map[string]string{"thread-id": "header-thread"})
+	StageClientIdentityIDsFromBody(c, []byte(`{"client_metadata":{"session_id":"body-session","thread_id":"body-thread","x-codex-turn-metadata":"{\"window_id\":\"body-window\"}"}}`))
+
+	ids := ExtractClientIdentityIDs(c)
+	require.Equal(t, "body-session", ids.SessionID)
+	require.Equal(t, "header-thread", ids.ThreadID)
+	require.Equal(t, "body-window", ids.WindowID)
+	StageClientIdentityIDsFromBody(c, []byte(`{"model":"gpt-5"}`))
+	ids = ExtractClientIdentityIDs(c)
+	require.Equal(t, "", ids.SessionID)
+	require.Equal(t, "header-thread", ids.ThreadID)
+	require.Equal(t, "", ids.WindowID)
+}

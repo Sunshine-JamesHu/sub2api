@@ -156,6 +156,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Request body is empty")
 		return
 	}
+	service.StageClientIdentityIDsFromBody(c, body)
 
 	setOpsRequestContext(c, "", false)
 
@@ -589,6 +590,8 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 					UserAgent:          userAgent,
 					IPAddress:          clientIP,
 					SessionID:          sessionID,
+					ThreadID:           service.ExtractClientIdentityIDs(c).ThreadID,
+					WindowID:           service.ExtractClientIdentityIDs(c).WindowID,
 					RequestPayloadHash: requestPayloadHash,
 					ForceCacheBilling:  forceCacheBilling,
 					APIKeyService:      h.apiKeyService,
@@ -951,6 +954,8 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 						UserAgent:          userAgent,
 						IPAddress:          clientIP,
 						SessionID:          sessionID,
+						ThreadID:           service.ExtractClientIdentityIDs(c).ThreadID,
+						WindowID:           service.ExtractClientIdentityIDs(c).WindowID,
 						RequestPayloadHash: requestPayloadHash,
 						ForceCacheBilling:  forceCacheBilling,
 						APIKeyService:      h.apiKeyService,

@@ -63,6 +63,7 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Request body is empty")
 		return
 	}
+	service.StageClientIdentityIDsFromBody(c, body)
 
 	if !gjson.ValidBytes(body) {
 		logRequestBodyParseFailure(reqLog, body, nil)
@@ -289,6 +290,8 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 					APIKeyService:      h.apiKeyService,
 					QuotaPlatform:      quotaPlatform,
 					SessionID:          sessionID,
+					ThreadID:           service.ExtractClientIdentityIDs(c).ThreadID,
+					WindowID:           service.ExtractClientIdentityIDs(c).WindowID,
 					ChannelUsageFields: clientRequestedUsageFields(c, channelMapping, reqModel, res.UpstreamModel),
 					PricingAt:          pricingAt,
 					CyberBlocked:       cyberBlocked,

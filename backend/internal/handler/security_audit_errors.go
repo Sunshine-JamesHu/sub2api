@@ -20,7 +20,7 @@ func (h *OpenAIGatewayHandler) openAISecurityAuditError(c *gin.Context, decision
 	}
 	if isCyberSessionBlockedSecurityAuditDecision(decision) && service.StopOpenAICompactSSEKeepaliveCommitted(c) {
 		service.MarkOpsStreamError(c, "permission_error", securityAuditMessage(decision), securityAuditStatus(decision))
-		if writeResponsesFailedSSE(c, "permission_error", securityAuditMessage(decision)) {
+		if writeResponsesFailedSSE(c, "permission_error", "", securityAuditMessage(decision)) {
 			return
 		}
 	}

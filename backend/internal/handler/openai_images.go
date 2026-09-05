@@ -407,6 +407,8 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 				APIKeyService:      h.apiKeyService,
 				QuotaPlatform:      quotaPlatform,
 				SessionID:          sessionID,
+				ThreadID:           service.ExtractClientIdentityIDs(c).ThreadID,
+				WindowID:           service.ExtractClientIdentityIDs(c).WindowID,
 				ChannelUsageFields: clientRequestedUsageFields(c, channelMapping, requestModel, upstreamModel),
 			}); err != nil {
 				logger.L().With(

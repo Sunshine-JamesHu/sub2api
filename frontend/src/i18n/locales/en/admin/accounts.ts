@@ -1500,7 +1500,14 @@ export default {
         todayTokens: 'Today Tokens',
         todayCost: 'Today Cost',
         usageTrend: '30-Day Cost & Request Trend',
-        noData: 'No usage data available for this account'
+        noData: 'No usage data available for this account',
+        identityStats: 'Session Identity Statistics',
+        today: 'Today',
+        last7Days: 'Last 7 days',
+        thisMonth: 'This month',
+        sessionIDs: 'Session',
+        threadIDs: 'Thread',
+        windowIDs: 'Window'
       },
       usageWindow: {
         statsTitle: '5-Hour Window Usage Statistics',

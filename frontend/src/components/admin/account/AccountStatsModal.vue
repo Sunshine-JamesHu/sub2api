@@ -392,6 +392,17 @@
           </div>
         </div>
 
+        <!-- Session identity statistics -->
+        <div class="card p-4">
+          <h3 class="mb-4 text-sm font-semibold text-gray-900 dark:text-white">{{ t('admin.accounts.stats.identityStats') }}</h3>
+          <div class="grid grid-cols-4 gap-3 text-sm">
+            <span></span><span class="font-semibold">{{ t('admin.accounts.stats.sessionIDs') }}</span><span class="font-semibold">{{ t('admin.accounts.stats.threadIDs') }}</span><span class="font-semibold">{{ t('admin.accounts.stats.windowIDs') }}</span>
+            <span>{{ t('admin.accounts.stats.today') }}</span><span>{{ stats.identity_stats?.today.session_ids || 0 }}</span><span>{{ stats.identity_stats?.today.thread_ids || 0 }}</span><span>{{ stats.identity_stats?.today.window_ids || 0 }}</span>
+            <span>{{ t('admin.accounts.stats.last7Days') }}</span><span>{{ stats.identity_stats?.last_7_days.session_ids || 0 }}</span><span>{{ stats.identity_stats?.last_7_days.thread_ids || 0 }}</span><span>{{ stats.identity_stats?.last_7_days.window_ids || 0 }}</span>
+            <span>{{ t('admin.accounts.stats.thisMonth') }}</span><span>{{ stats.identity_stats?.this_month.session_ids || 0 }}</span><span>{{ stats.identity_stats?.this_month.thread_ids || 0 }}</span><span>{{ stats.identity_stats?.this_month.window_ids || 0 }}</span>
+          </div>
+        </div>
+
         <!-- Usage Trend Chart -->
         <div class="card p-4">
           <h3 class="mb-4 text-sm font-semibold text-gray-900 dark:text-white">

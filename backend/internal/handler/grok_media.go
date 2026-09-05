@@ -715,6 +715,8 @@ func recordGrokMediaUsage(
 			APIKeyService:      h.apiKeyService,
 			QuotaPlatform:      quotaPlatform,
 			SessionID:          sessionID,
+			ThreadID:           service.ExtractClientIdentityIDs(c).ThreadID,
+			WindowID:           service.ExtractClientIdentityIDs(c).WindowID,
 			ChannelUsageFields: channelUsageFields,
 		}); err != nil {
 			if videoTaskID != "" {

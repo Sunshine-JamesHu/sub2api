@@ -2205,6 +2205,19 @@ export interface AccountUsageStatsResponse {
   models: ModelStat[]
   endpoints: EndpointStat[]
   upstream_endpoints: EndpointStat[]
+  identity_stats: AccountIdentityStats
+}
+
+export interface AccountIdentityCounts {
+  session_ids: number
+  thread_ids: number
+  window_ids: number
+}
+
+export interface AccountIdentityStats {
+  today: AccountIdentityCounts
+  last_7_days: AccountIdentityCounts
+  this_month: AccountIdentityCounts
 }
 
 // ==================== User Attribute Types ====================

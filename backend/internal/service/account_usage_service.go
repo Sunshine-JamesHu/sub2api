@@ -20,6 +20,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/usagestats"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
+	"github.com/redis/go-redis/v9"
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/sync/singleflight"
 )
@@ -303,6 +304,8 @@ type AccountUsageService struct {
 	tlsFPProfileService     *TLSFingerprintProfileService
 	agentIdentityTaskMu     sync.Mutex
 	agentIdentityWS         agentIdentityWSConnectionInvalidator
+	accountStatsRedis       *redis.Client
+	accountStatsFlight      singleflight.Group
 }
 
 // NewAccountUsageService 创建AccountUsageService实例
@@ -318,6 +321,7 @@ func NewAccountUsageService(
 	cache *UsageCache,
 	identityCache IdentityCache,
 	tlsFPProfileService *TLSFingerprintProfileService,
+	accountStatsRedis *redis.Client,
 ) *AccountUsageService {
 	return &AccountUsageService{
 		accountRepo:             accountRepo,
@@ -331,6 +335,7 @@ func NewAccountUsageService(
 		cache:                   cache,
 		identityCache:           identityCache,
 		tlsFPProfileService:     tlsFPProfileService,
+		accountStatsRedis:       accountStatsRedis,
 	}
 }
 
@@ -1552,11 +1557,32 @@ func codexWindowStatsStart(progress *UsageProgress, fallbackWindow time.Duration
 }
 
 func (s *AccountUsageService) GetAccountUsageStats(ctx context.Context, accountID int64, startTime, endTime time.Time) (*usagestats.AccountUsageStatsResponse, error) {
-	stats, err := s.usageLogRepo.GetAccountUsageStats(ctx, accountID, startTime, endTime)
-	if err != nil {
-		return nil, fmt.Errorf("get account usage stats failed: %w", err)
+	cacheKey := fmt.Sprintf("sub2api:account:stats:v2:%d:%d:%d", accountID, startTime.Unix(), endTime.Unix())
+	load := func() (any, error) {
+		if s.accountStatsRedis != nil {
+			if raw, err := s.accountStatsRedis.Get(ctx, cacheKey).Result(); err == nil {
+				var cached usagestats.AccountUsageStatsResponse
+				if json.Unmarshal([]byte(raw), &cached) == nil {
+					return &cached, nil
+				}
+			}
+		}
+		stats, err := s.usageLogRepo.GetAccountUsageStats(ctx, accountID, startTime, endTime)
+		if err != nil {
+			return nil, fmt.Errorf("get account usage stats failed: %w", err)
+		}
+		if s.accountStatsRedis != nil {
+			if payload, err := json.Marshal(stats); err == nil {
+				_ = s.accountStatsRedis.Set(ctx, cacheKey, payload, 5*time.Minute).Err()
+			}
+		}
+		return stats, nil
 	}
-	return stats, nil
+	value, err, _ := s.accountStatsFlight.Do(cacheKey, load)
+	if err != nil {
+		return nil, err
+	}
+	return value.(*usagestats.AccountUsageStatsResponse), nil
 }
 
 // fetchOAuthUsageRaw 从 Anthropic API 获取原始响应（不构建 UsageInfo）

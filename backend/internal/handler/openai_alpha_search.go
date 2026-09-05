@@ -293,6 +293,8 @@ func (h *OpenAIGatewayHandler) recordAlphaSearchUsage(
 			APIKeyService:      h.apiKeyService,
 			QuotaPlatform:      quotaPlatform,
 			SessionID:          sessionID,
+			ThreadID:           service.ExtractClientIdentityIDs(c).ThreadID,
+			WindowID:           service.ExtractClientIdentityIDs(c).WindowID,
 			ChannelUsageFields: channelMapping.ToUsageFields(requestedModel, result.UpstreamModel),
 			PricingAt:          service.OpenAIPricingAtFromContext(c.Request.Context()),
 		}); err != nil {

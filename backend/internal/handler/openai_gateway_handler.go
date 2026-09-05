@@ -424,6 +424,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Request body is empty")
 		return
 	}
+	service.StageClientIdentityIDsFromBody(c, body)
 
 	setOpsRequestContext(c, "", false)
 	sessionHashBody := body
@@ -818,6 +819,8 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 					APIKeyService:      h.apiKeyService,
 					QuotaPlatform:      quotaPlatform,
 					SessionID:          sessionID,
+					ThreadID:           service.ExtractClientIdentityIDs(c).ThreadID,
+					WindowID:           service.ExtractClientIdentityIDs(c).WindowID,
 					ChannelUsageFields: clientRequestedUsageFields(c, channelMapping, reqModel, res.UpstreamModel),
 					PricingAt:          pricingAt,
 					CyberBlocked:       cyberBlocked,
@@ -1159,6 +1162,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 		h.anthropicErrorResponse(c, http.StatusBadRequest, "invalid_request_error", "Request body is empty")
 		return
 	}
+	service.StageClientIdentityIDsFromBody(c, body)
 
 	if !gjson.ValidBytes(body) {
 		logRequestBodyParseFailure(reqLog, body, nil)
@@ -1384,6 +1388,8 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 					APIKeyService:      h.apiKeyService,
 					QuotaPlatform:      quotaPlatform,
 					SessionID:          sessionID,
+					ThreadID:           service.ExtractClientIdentityIDs(c).ThreadID,
+					WindowID:           service.ExtractClientIdentityIDs(c).WindowID,
 					ChannelUsageFields: clientRequestedUsageFields(c, channelMappingMsg, reqModel, res.UpstreamModel),
 					PricingAt:          pricingAt,
 					CyberBlocked:       cyberBlocked,
@@ -2344,6 +2350,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, "invalid JSON payload")
 		return
 	}
+	service.StageClientIdentityIDsFromBody(c, firstMessage)
 	reqModel := strings.TrimSpace(gjson.GetBytes(firstMessage, "model").String())
 	if reqModel == "" {
 		closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, "model is required in first response.create payload")
@@ -2744,6 +2751,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 				c.Set(securityAuditWSTurnContextKey, turn)
 				service.BeginOpsStreamTurn(c, turn)
 				setCyberTurnBody(turn, payload)
+				service.StageClientIdentityIDsFromBody(c, payload)
 				// Passthrough ingress intentionally skips BeforeTurn, so enforce only
 				// the connection-level cyber session gate here as well. Native ingress
 				// visits this hook first and gets the same side-effect-free close error;
@@ -2927,6 +2935,8 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 						APIKeyService:      h.apiKeyService,
 						QuotaPlatform:      quotaPlatform,
 						SessionID:          sessionID,
+						ThreadID:           service.ExtractClientIdentityIDs(c).ThreadID,
+						WindowID:           service.ExtractClientIdentityIDs(c).WindowID,
 						ChannelUsageFields: turnUsageFields,
 						PricingAt:          turnRecordPricingAt,
 						CyberBlocked:       cyberBlocked,
@@ -4166,6 +4176,8 @@ func (h *OpenAIGatewayHandler) recordCyberPolicyIfMarked(c *gin.Context, apiKey 
 				UserAgent:          userAgent,
 				IPAddress:          clientIPStr,
 				SessionID:          sessionID,
+				ThreadID:           service.ExtractClientIdentityIDs(c).ThreadID,
+				WindowID:           service.ExtractClientIdentityIDs(c).WindowID,
 				RequestPayloadHash: requestPayloadHash,
 				APIKeyService:      apiKeySvc,
 				NativeCompactionV2: nativeCompactionV2,

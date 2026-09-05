@@ -385,4 +385,17 @@ type AccountUsageStatsResponse struct {
 	Models            []ModelStat           `json:"models"`
 	Endpoints         []EndpointStat        `json:"endpoints"`
 	UpstreamEndpoints []EndpointStat        `json:"upstream_endpoints"`
+	IdentityStats     AccountIdentityStats  `json:"identity_stats"`
+}
+
+type AccountIdentityStats struct {
+	Today     AccountIdentityCounts `json:"today"`
+	Last7Days AccountIdentityCounts `json:"last_7_days"`
+	ThisMonth AccountIdentityCounts `json:"this_month"`
+}
+
+type AccountIdentityCounts struct {
+	SessionIDs int64 `json:"session_ids"`
+	ThreadIDs  int64 `json:"thread_ids"`
+	WindowIDs  int64 `json:"window_ids"`
 }

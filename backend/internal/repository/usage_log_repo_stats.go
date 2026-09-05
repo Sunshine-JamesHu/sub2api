@@ -1088,12 +1088,40 @@ func (r *usageLogRepository) GetAccountUsageStats(ctx context.Context, accountID
 		upstreamEndpoints = []EndpointStat{}
 	}
 
+	// Keep the three display windows in one indexed query. NULL/empty identifiers
+	// are intentionally excluded from distinct counts.
+	now := timezone.Now()
+	todayStart := timezone.StartOfDay(now)
+	sevenDayStart := timezone.StartOfDay(now.AddDate(0, 0, -6))
+	monthStart := timezone.StartOfDay(time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location()))
+	identityQuery := `
+		SELECT
+			COUNT(DISTINCT session_id) FILTER (WHERE created_at >= $2 AND created_at < $3 AND NULLIF(TRIM(session_id), '') IS NOT NULL),
+			COUNT(DISTINCT thread_id) FILTER (WHERE created_at >= $2 AND created_at < $3 AND NULLIF(TRIM(thread_id), '') IS NOT NULL),
+			COUNT(DISTINCT window_id) FILTER (WHERE created_at >= $2 AND created_at < $3 AND NULLIF(TRIM(window_id), '') IS NOT NULL),
+			COUNT(DISTINCT session_id) FILTER (WHERE created_at >= $4 AND created_at < $3 AND NULLIF(TRIM(session_id), '') IS NOT NULL),
+			COUNT(DISTINCT thread_id) FILTER (WHERE created_at >= $4 AND created_at < $3 AND NULLIF(TRIM(thread_id), '') IS NOT NULL),
+			COUNT(DISTINCT window_id) FILTER (WHERE created_at >= $4 AND created_at < $3 AND NULLIF(TRIM(window_id), '') IS NOT NULL),
+			COUNT(DISTINCT session_id) FILTER (WHERE created_at >= $5 AND created_at < $3 AND NULLIF(TRIM(session_id), '') IS NOT NULL),
+			COUNT(DISTINCT thread_id) FILTER (WHERE created_at >= $5 AND created_at < $3 AND NULLIF(TRIM(thread_id), '') IS NOT NULL),
+			COUNT(DISTINCT window_id) FILTER (WHERE created_at >= $5 AND created_at < $3 AND NULLIF(TRIM(window_id), '') IS NOT NULL)
+		FROM usage_logs
+		WHERE account_id = $1 AND created_at >= $5 AND created_at < $3`
+	var identity usagestats.AccountIdentityStats
+	if err := scanSingleRow(ctx, r.sql, identityQuery, []any{accountID, todayStart, now, sevenDayStart, monthStart},
+		&identity.Today.SessionIDs, &identity.Today.ThreadIDs, &identity.Today.WindowIDs,
+		&identity.Last7Days.SessionIDs, &identity.Last7Days.ThreadIDs, &identity.Last7Days.WindowIDs,
+		&identity.ThisMonth.SessionIDs, &identity.ThisMonth.ThreadIDs, &identity.ThisMonth.WindowIDs); err != nil {
+		return nil, err
+	}
+
 	resp = &AccountUsageStatsResponse{
 		History:           history,
 		Summary:           summary,
 		Models:            models,
 		Endpoints:         endpoints,
 		UpstreamEndpoints: upstreamEndpoints,
+		IdentityStats:     identity,
 	}
 	return resp, nil
 }

@@ -273,6 +273,8 @@ func (h *OpenAIGatewayHandler) Embeddings(c *gin.Context) {
 				APIKeyService:      h.apiKeyService,
 				QuotaPlatform:      quotaPlatform,
 				SessionID:          sessionID,
+				ThreadID:           service.ExtractClientIdentityIDs(c).ThreadID,
+				WindowID:           service.ExtractClientIdentityIDs(c).WindowID,
 				ChannelUsageFields: clientRequestedUsageFields(c, channelMapping, reqModel, result.UpstreamModel),
 				PricingAt:          pricingAt,
 			}); err != nil {

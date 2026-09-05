@@ -603,6 +603,8 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 				ForceCacheBilling:  forceCacheBilling,
 				APIKeyService:      h.apiKeyService,
 				SessionID:          sessionID,
+				ThreadID:           service.ExtractClientIdentityIDs(c).ThreadID,
+				WindowID:           service.ExtractClientIdentityIDs(c).WindowID,
 				ChannelUsageFields: clientRequestedUsageFields(c, channelMapping, reqModel, result.UpstreamModel),
 			}); err != nil {
 				logger.L().With(

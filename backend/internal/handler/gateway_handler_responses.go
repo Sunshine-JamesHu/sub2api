@@ -59,6 +59,7 @@ func (h *GatewayHandler) Responses(c *gin.Context) {
 		h.responsesErrorResponse(c, http.StatusBadRequest, "invalid_request_error", "Request body is empty")
 		return
 	}
+	service.StageClientIdentityIDsFromBody(c, body)
 
 	setOpsRequestContext(c, "", false)
 
@@ -341,6 +342,8 @@ func (h *GatewayHandler) Responses(c *gin.Context) {
 				RequestPayloadHash: requestPayloadHash,
 				APIKeyService:      h.apiKeyService,
 				SessionID:          sessionID,
+				ThreadID:           service.ExtractClientIdentityIDs(c).ThreadID,
+				WindowID:           service.ExtractClientIdentityIDs(c).WindowID,
 				ChannelUsageFields: clientRequestedUsageFields(c, channelMapping, reqModel, result.UpstreamModel),
 			}); err != nil {
 				reqLog.Error("gateway.responses.record_usage_failed",
