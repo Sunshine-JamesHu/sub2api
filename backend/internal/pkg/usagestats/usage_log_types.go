@@ -391,7 +391,7 @@ type AccountUsageStatsResponse struct {
 type AccountIdentityStats struct {
 	Today     AccountIdentityCounts `json:"today"`
 	Last7Days AccountIdentityCounts `json:"last_7_days"`
-	ThisMonth AccountIdentityCounts `json:"this_month"`
+	Last30Days AccountIdentityCounts `json:"last_30_days"`
 }
 
 type AccountIdentityCounts struct {

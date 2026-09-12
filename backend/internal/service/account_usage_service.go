@@ -1557,7 +1557,7 @@ func codexWindowStatsStart(progress *UsageProgress, fallbackWindow time.Duration
 }
 
 func (s *AccountUsageService) GetAccountUsageStats(ctx context.Context, accountID int64, startTime, endTime time.Time) (*usagestats.AccountUsageStatsResponse, error) {
-	cacheKey := fmt.Sprintf("sub2api:account:stats:v2:%d:%d:%d", accountID, startTime.Unix(), endTime.Unix())
+	cacheKey := fmt.Sprintf("sub2api:account:stats:v3:%d:%d:%d", accountID, startTime.Unix(), endTime.Unix())
 	load := func() (any, error) {
 		if s.accountStatsRedis != nil {
 			if raw, err := s.accountStatsRedis.Get(ctx, cacheKey).Result(); err == nil {

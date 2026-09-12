@@ -1093,7 +1093,7 @@ func (r *usageLogRepository) GetAccountUsageStats(ctx context.Context, accountID
 	now := timezone.Now()
 	todayStart := timezone.StartOfDay(now)
 	sevenDayStart := timezone.StartOfDay(now.AddDate(0, 0, -6))
-	monthStart := timezone.StartOfDay(time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location()))
+	thirtyDayStart := timezone.StartOfDay(now.AddDate(0, 0, -29))
 	identityQuery := `
 		SELECT
 			COUNT(DISTINCT session_id) FILTER (WHERE created_at >= $2 AND created_at < $3 AND NULLIF(TRIM(session_id), '') IS NOT NULL),
@@ -1108,10 +1108,10 @@ func (r *usageLogRepository) GetAccountUsageStats(ctx context.Context, accountID
 		FROM usage_logs
 		WHERE account_id = $1 AND created_at >= $5 AND created_at < $3`
 	var identity usagestats.AccountIdentityStats
-	if err := scanSingleRow(ctx, r.sql, identityQuery, []any{accountID, todayStart, now, sevenDayStart, monthStart},
+	if err := scanSingleRow(ctx, r.sql, identityQuery, []any{accountID, todayStart, now, sevenDayStart, thirtyDayStart},
 		&identity.Today.SessionIDs, &identity.Today.ThreadIDs, &identity.Today.WindowIDs,
 		&identity.Last7Days.SessionIDs, &identity.Last7Days.ThreadIDs, &identity.Last7Days.WindowIDs,
-		&identity.ThisMonth.SessionIDs, &identity.ThisMonth.ThreadIDs, &identity.ThisMonth.WindowIDs); err != nil {
+		&identity.Last30Days.SessionIDs, &identity.Last30Days.ThreadIDs, &identity.Last30Days.WindowIDs); err != nil {
 		return nil, err
 	}
 

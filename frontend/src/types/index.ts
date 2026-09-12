@@ -2233,7 +2233,7 @@ export interface AccountIdentityCounts {
 export interface AccountIdentityStats {
   today: AccountIdentityCounts
   last_7_days: AccountIdentityCounts
-  this_month: AccountIdentityCounts
+  last_30_days: AccountIdentityCounts
 }
 
 // ==================== User Attribute Types ====================

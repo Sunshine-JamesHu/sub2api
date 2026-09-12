@@ -1550,7 +1550,7 @@ export default {
         identityStats: 'Session Identity Statistics',
         today: 'Today',
         last7Days: 'Last 7 days',
-        thisMonth: 'This month',
+        last30Days: 'Last 30 days',
         sessionIDs: 'Session',
         threadIDs: 'Thread',
         windowIDs: 'Window'

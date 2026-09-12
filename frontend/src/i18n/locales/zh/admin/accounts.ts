@@ -1608,7 +1608,7 @@ export default {
         identityStats: '会话标识统计',
         today: '今日',
         last7Days: '近七天',
-        thisMonth: '本月',
+        last30Days: '近30天',
         sessionIDs: 'Session',
         threadIDs: 'Thread',
         windowIDs: 'Window'

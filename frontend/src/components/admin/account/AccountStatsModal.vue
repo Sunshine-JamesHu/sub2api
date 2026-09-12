@@ -399,7 +399,7 @@
             <span></span><span class="font-semibold">{{ t('admin.accounts.stats.sessionIDs') }}</span><span class="font-semibold">{{ t('admin.accounts.stats.threadIDs') }}</span><span class="font-semibold">{{ t('admin.accounts.stats.windowIDs') }}</span>
             <span>{{ t('admin.accounts.stats.today') }}</span><span>{{ stats.identity_stats?.today.session_ids || 0 }}</span><span>{{ stats.identity_stats?.today.thread_ids || 0 }}</span><span>{{ stats.identity_stats?.today.window_ids || 0 }}</span>
             <span>{{ t('admin.accounts.stats.last7Days') }}</span><span>{{ stats.identity_stats?.last_7_days.session_ids || 0 }}</span><span>{{ stats.identity_stats?.last_7_days.thread_ids || 0 }}</span><span>{{ stats.identity_stats?.last_7_days.window_ids || 0 }}</span>
-            <span>{{ t('admin.accounts.stats.thisMonth') }}</span><span>{{ stats.identity_stats?.this_month.session_ids || 0 }}</span><span>{{ stats.identity_stats?.this_month.thread_ids || 0 }}</span><span>{{ stats.identity_stats?.this_month.window_ids || 0 }}</span>
+            <span>{{ t('admin.accounts.stats.last30Days') }}</span><span>{{ stats.identity_stats?.last_30_days.session_ids || 0 }}</span><span>{{ stats.identity_stats?.last_30_days.thread_ids || 0 }}</span><span>{{ stats.identity_stats?.last_30_days.window_ids || 0 }}</span>
           </div>
         </div>
 
