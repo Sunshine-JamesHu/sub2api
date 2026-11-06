@@ -35,7 +35,6 @@ const (
 )
 
 var makerSuiteAPIKeyPattern = regexp.MustCompile(`"WIu0Nc":"([^"]+)"`)
-var accountEmailPattern = regexp.MustCompile(`"oPEP7c":("(?:[^"\\]|\\.)*")`)
 
 type SessionOptions struct {
 	State    StorageState
@@ -103,31 +102,20 @@ func NewSession(options SessionOptions) (*Session, error) {
 	}
 	s := &Session{Version: options.Version, client: client, proxyURL: options.ProxyURL, authUser: options.AuthUser, state: options.State, onChange: options.OnChange, catalog: map[string][]byte{}}
 	var fingerprint map[string]any
-	if raw := options.State.extra["playground_fingerprint"]; len(raw) > 0 {
+	if raw := options.State.Fingerprint; len(raw) > 0 {
 		if err := json.Unmarshal(raw, &fingerprint); err != nil {
 			return nil, fmt.Errorf("parse browser fingerprint: %w", err)
 		}
 	}
 	if len(fingerprint) == 0 {
 		var err error
-		locale := "en-US"
-		if extension, exists, extensionErr := options.State.AuthExtension(); extensionErr != nil {
-			return nil, extensionErr
-		} else if exists && strings.TrimSpace(extension.Source.Locale) != "" {
-			locale = extension.Source.Locale
-		}
-		fingerprint, err = buildCamoufoxConfig(152, locale, "America/Los_Angeles")
+		fingerprint, err = NewBrowserFingerprint()
 		if err != nil {
 			return nil, err
 		}
-		if s.state.extra == nil {
-			s.state.extra = map[string]json.RawMessage{}
-		}
-		raw, err := json.Marshal(fingerprint)
-		if err != nil {
+		if err := s.state.SetBrowserFingerprint(fingerprint); err != nil {
 			return nil, err
 		}
-		s.state.extra["playground_fingerprint"] = raw
 	}
 	s.profile, _, _ = profileFromFingerprint(fingerprint)
 	s.profile.Locale, _ = fingerprint["navigator.language"].(string)
@@ -144,34 +132,6 @@ func NewSession(options SessionOptions) (*Session, error) {
 	return s, nil
 }
 
-// VerifyAccountEmail checks the actual account returned by the AI Studio page.
-// This uses the same transport, proxy, fingerprint and rotating Cookie state.
-func (s *Session) VerifyAccountEmail(ctx context.Context, expected string) error {
-	response, err := s.Do(ctx, http.MethodGet, s.pageURL, nil, http.Header{"Accept": {"text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"}})
-	if err != nil {
-		return err
-	}
-	defer response.Body.Close()
-	if response.StatusCode >= 300 && response.StatusCode < 400 || response.StatusCode == http.StatusUnauthorized {
-		return ErrAuthenticationRequired
-	}
-	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("AI Studio account page HTTP %d", response.StatusCode)
-	}
-	body, err := io.ReadAll(io.LimitReader(response.Body, 16<<20))
-	if err != nil {
-		return err
-	}
-	match := accountEmailPattern.FindSubmatch(body)
-	var email string
-	if match == nil || json.Unmarshal(match[1], &email) != nil || !strings.Contains(email, "@") {
-		return errors.New("AI Studio page has no verifiable account email")
-	}
-	if !strings.EqualFold(strings.TrimSpace(expected), email) {
-		return errors.New("AI Studio session does not match the selected Chrome account")
-	}
-	return nil
-}
 func (s *Session) StorageState() StorageState {
 	s.stateMu.Lock()
 	defer s.stateMu.Unlock()
@@ -232,10 +192,7 @@ func (s *Session) ReplaceState(state StorageState) error {
 	s.pendingChallenge = nil
 	s.stateMu.Lock()
 	defer s.stateMu.Unlock()
-	if state.extra == nil {
-		state.extra = map[string]json.RawMessage{}
-	}
-	state.extra["playground_fingerprint"] = s.state.extra["playground_fingerprint"]
+	state.Fingerprint = s.state.Fingerprint
 	s.state = state
 	s.networkError = nil
 	return s.persistLocked()
@@ -397,6 +354,9 @@ func (s *Session) RPC(ctx context.Context, method string, body []byte) (*http.Re
 	}
 	if method == "GenerateContent" {
 		headers.Set("Priority", "u=0")
+		if tier := s.headers.Get("X-AIStudio-G1-Tier"); tier != "" {
+			headers.Set("X-AIStudio-G1-Tier", tier)
+		}
 	}
 	return s.Do(ctx, http.MethodPost, MakerSuiteRPCBase+method, body, headers)
 }
@@ -524,6 +484,14 @@ func (s *Session) EnsurePage(ctx context.Context, model string) error {
 	}
 	for index, rpc := range startup {
 		s.catalog[rpc.method] = results[index]
+	}
+	tier, err := benefitTierHeader(s.catalog["GetAiStudioBenefitTier"])
+	if err != nil {
+		return err
+	}
+	s.headers.Del("X-AIStudio-G1-Tier")
+	if tier != "" {
+		s.headers.Set("X-AIStudio-G1-Tier", tier)
 	}
 	normalized, err := io.ReadAll(newSparseJSONReader(bytes.NewReader(results[0])))
 	if err != nil {

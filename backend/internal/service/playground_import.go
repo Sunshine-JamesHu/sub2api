@@ -9,16 +9,16 @@ import (
 // normalizePlaygroundCredentials accepts only a completed server-owned browser
 // login grant. Raw cookies, caller-selected profiles and Chrome RT imports cannot
 // establish or replace a Playground identity.
-func (s *adminServiceImpl) normalizePlaygroundCredentials(ctx context.Context, platform, accountType, chromeID string, proxyID *int64, incoming, existing map[string]any) (map[string]any, error) {
-	if chromeID != "" {
-		return nil, infraerrors.BadRequest("PLAYGROUND_BROWSER_LOGIN_REQUIRED", "Chrome import has been removed; use Camoufox login")
-	}
+func (s *adminServiceImpl) normalizePlaygroundCredentials(ctx context.Context, platform, accountType string, proxyID *int64, incoming, existing map[string]any) (map[string]any, error) {
 	if platform != PlatformGemini || accountType != AccountTypePlayground {
 		return incoming, nil
 	}
-	next, err := clonePlaygroundCredentials(incoming)
+	next, err := cloneAccountJSONMap(incoming)
 	if err != nil {
 		return nil, err
+	}
+	if next == nil {
+		next = map[string]any{}
 	}
 	for _, key := range []string{"cookies", "cookie", "playground_storage_state", "refresh_token", "wrapped_binding_key", "gaia_id"} {
 		if value, ok := next[key]; ok && value != nil {

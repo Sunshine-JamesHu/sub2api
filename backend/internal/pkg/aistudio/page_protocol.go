@@ -14,6 +14,33 @@ import (
 const firefoxInnerHeightDiff = 57
 const publicDiscoveryUserAgent = DefaultUserAgent
 
+// benefitTierHeader maps the account's actual AI Studio benefit to the generation header.
+func benefitTierHeader(raw []byte) (string, error) {
+	var fields []json.RawMessage
+	if err := json.NewDecoder(newSparseJSONReader(bytes.NewReader(raw))).Decode(&fields); err != nil {
+		return "", fmt.Errorf("parse GetAiStudioBenefitTier: %w", err)
+	}
+	if len(fields) == 0 || bytes.Equal(bytes.TrimSpace(fields[0]), []byte("null")) {
+		return "", nil
+	}
+	var tier int
+	if err := json.Unmarshal(fields[0], &tier); err != nil {
+		return "", fmt.Errorf("parse GetAiStudioBenefitTier tier: %w", err)
+	}
+	switch tier {
+	case 0:
+		return "", nil
+	case 1:
+		return "TIER1", nil
+	case 2:
+		return "TIER2", nil
+	case 3:
+		return "TIER0", nil
+	default:
+		return "", fmt.Errorf("unrecognized GetAiStudioBenefitTier tier %d", tier)
+	}
+}
+
 func profileFromFingerprint(config map[string]any) (waa.Profile, string, string) {
 	profile := waa.Profile{Window: map[string]any{}, Navigator: map[string]any{}, Screen: map[string]any{}, Document: map[string]any{}}
 	for key, value := range config {

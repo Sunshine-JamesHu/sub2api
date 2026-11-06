@@ -20,18 +20,6 @@ func playgroundCredentialVersion(credentials map[string]any) string {
 	raw, _ := json.Marshal(credentials)
 	return aistudio.ComputePayloadDigest(string(raw))
 }
-func clonePlaygroundCredentials(credentials map[string]any) (map[string]any, error) {
-	raw, err := json.Marshal(credentials)
-	if err != nil {
-		return nil, err
-	}
-	var clone map[string]any
-	err = json.Unmarshal(raw, &clone)
-	if clone == nil {
-		clone = map[string]any{}
-	}
-	return clone, err
-}
 
 type playgroundActiveSession struct {
 	lease                      *aistudio.SessionLease
@@ -39,32 +27,32 @@ type playgroundActiveSession struct {
 	ctx                        context.Context
 }
 
-func (s *PlaygroundGatewayService) acquireSession(ctx context.Context, account *Account) (*aistudio.Session, *Account, func(), error) {
+func (s *PlaygroundGatewayService) acquireSession(ctx context.Context, account *Account) (*aistudio.Session, func(), error) {
 	if s.browser == nil || s.browser.Cache == nil {
-		return nil, nil, nil, errors.New("Playground Camoufox/Redis service is unavailable")
+		return nil, nil, errors.New("Playground Camoufox/Redis service is unavailable")
 	}
 	fresh, err := s.accountRepo.GetByID(ctx, account.ID)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 	profile := fresh.GetCredential("playground_profile_id")
 	email := fresh.GetCredential("playground_email")
 	if profile == "" || email == "" {
-		return nil, nil, nil, fmt.Errorf("%w: this account must be authorized with Camoufox", aistudio.ErrAuthenticationRequired)
+		return nil, nil, fmt.Errorf("%w: this account must be authorized with Camoufox", aistudio.ErrAuthenticationRequired)
 	}
 	if fresh.Platform != PlatformGemini || fresh.Type != AccountTypePlayground {
-		return nil, nil, nil, errors.New("account is not a Gemini Playground account")
+		return nil, nil, errors.New("account is not a Gemini Playground account")
 	}
 	proxy := ""
 	if fresh.ProxyID != nil {
 		if fresh.Proxy == nil {
-			return nil, nil, nil, errors.New("Playground account proxy is missing")
+			return nil, nil, errors.New("Playground account proxy is missing")
 		}
 		proxy = fresh.Proxy.URL()
 	}
 	lease, err := s.browser.Cache.Acquire(ctx, profile)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 	leaseCtx, cancel := context.WithCancel(ctx)
 	heartbeatDone := make(chan struct{})
@@ -100,11 +88,11 @@ func (s *PlaygroundGatewayService) acquireSession(ctx context.Context, account *
 	latest, err := s.accountRepo.GetByID(leaseCtx, account.ID)
 	if err != nil {
 		releaseLease()
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 	if playgroundCredentialVersion(latest.Credentials) != playgroundCredentialVersion(fresh.Credentials) || !samePlaygroundProxy(latest, fresh) {
 		releaseLease()
-		return nil, nil, nil, errPlaygroundSessionChanged
+		return nil, nil, errPlaygroundSessionChanged
 	}
 	key := playgroundCacheKey(profile, proxy, email)
 	active := &playgroundActiveSession{lease: lease, key: key, profile: profile, proxy: proxy, email: email, ctx: leaseCtx}
@@ -138,11 +126,11 @@ func (s *PlaygroundGatewayService) acquireSession(ctx context.Context, account *
 	})
 	if err != nil {
 		releaseLease()
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 	s.activeSessions.Store(session, active)
 	release := func() { s.activeSessions.Delete(session); unlock(); releaseLease() }
-	return session, fresh, release, nil
+	return session, release, nil
 }
 func samePlaygroundProxy(a, b *Account) bool {
 	if a.ProxyID == nil || b.ProxyID == nil {
@@ -156,7 +144,7 @@ func samePlaygroundProxy(a, b *Account) bool {
 	}
 	return a.Proxy.URL() == b.Proxy.URL()
 }
-func (s *PlaygroundGatewayService) refreshSession(ctx context.Context, session *aistudio.Session, account *Account) error {
+func (s *PlaygroundGatewayService) refreshSession(session *aistudio.Session) error {
 	value, ok := s.activeSessions.Load(session)
 	if !ok {
 		return aistudio.ErrSessionLeaseLost
@@ -194,7 +182,7 @@ func (s *PlaygroundGatewayService) rawGenerate(ctx context.Context, session *ais
 }
 
 func (s *PlaygroundGatewayService) Models(ctx context.Context, account *Account) ([]string, []byte, error) {
-	session, fresh, release, err := s.acquireSession(ctx, account)
+	session, release, err := s.acquireSession(ctx, account)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -215,7 +203,7 @@ func (s *PlaygroundGatewayService) Models(ctx context.Context, account *Account)
 			}
 		}
 		if errors.Is(err, aistudio.ErrAuthenticationRequired) && attempt == 0 {
-			if err = s.refreshSession(ctx, session, fresh); err != nil {
+			if err = s.refreshSession(session); err != nil {
 				return nil, nil, err
 			}
 			continue

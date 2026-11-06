@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/aistudio"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
@@ -21,25 +20,17 @@ import (
 
 // PlaygroundGatewayService forwards requests to Google MakerSuiteService using web cookies and WAA BotGuard proofs.
 type PlaygroundGatewayService struct {
-	accountRepo      AccountRepository
-	rateLimitService *RateLimitService
-	cfg              *config.Config
-	waaManager       *aistudio.WAAManager
-	generateContent  func(context.Context, *aistudio.Session, string, []byte) (*http.Response, error)
-	browser          *PlaygroundBrowserService
-	activeSessions   sync.Map
+	accountRepo     AccountRepository
+	waaManager      *aistudio.WAAManager
+	generateContent func(context.Context, *aistudio.Session, string, []byte) (*http.Response, error)
+	browser         *PlaygroundBrowserService
+	activeSessions  sync.Map
 }
 
-func NewPlaygroundGatewayService(
-	accountRepo AccountRepository,
-	rateLimitService *RateLimitService,
-	cfg *config.Config,
-) *PlaygroundGatewayService {
+func NewPlaygroundGatewayService(accountRepo AccountRepository) *PlaygroundGatewayService {
 	return &PlaygroundGatewayService{
-		accountRepo:      accountRepo,
-		rateLimitService: rateLimitService,
-		cfg:              cfg,
-		waaManager:       aistudio.DefaultWAAManager(),
+		accountRepo: accountRepo,
+		waaManager:  aistudio.DefaultWAAManager(),
 	}
 }
 
@@ -63,7 +54,7 @@ func (s *PlaygroundGatewayService) DoGemini(ctx context.Context, account *Accoun
 		return nil, err
 	}
 	runCtx, cancel := context.WithCancel(ctx)
-	session, fresh, release, err := s.acquireSession(runCtx, account)
+	session, release, err := s.acquireSession(runCtx, account)
 	if err != nil {
 		cancel()
 		return nil, err
@@ -88,7 +79,7 @@ func (s *PlaygroundGatewayService) DoGemini(ctx context.Context, account *Accoun
 		}
 		if errors.Is(err, aistudio.ErrAuthenticationRequired) && attempt == 0 {
 			attempt++
-			err = s.refreshSession(runCtx, session, fresh)
+			err = s.refreshSession(session)
 			if err == nil {
 				continue
 			}
@@ -165,7 +156,7 @@ func (s *PlaygroundGatewayService) DoGemini(ctx context.Context, account *Accoun
 			_ = upstream.Body.Close()
 			if errors.Is(decodeErr, aistudio.ErrAuthenticationRequired) && !emitted && attempt == 0 {
 				attempt++
-				decodeErr = s.refreshSession(runCtx, session, fresh)
+				decodeErr = s.refreshSession(session)
 				if decodeErr == nil {
 					upstream, decodeErr = generate(runCtx, session, model, body)
 					if decodeErr == nil && upstream.StatusCode == http.StatusOK {

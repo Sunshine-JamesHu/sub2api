@@ -28,7 +28,7 @@ func (r *playgroundTestRepository) GetByID(context.Context, int64) (*Account, er
 	defer r.mu.Unlock()
 	clone := r.account
 	var err error
-	clone.Credentials, err = clonePlaygroundCredentials(clone.Credentials)
+	clone.Credentials, err = cloneAccountJSONMap(clone.Credentials)
 	return &clone, err
 }
 func playgroundState(value string) aistudio.StorageState {
@@ -50,7 +50,7 @@ func newPlaygroundTestGateway(t *testing.T, repo *playgroundTestRepository) (*Pl
 	browser.recover = func(context.Context, string, string, string) (aistudio.StorageState, error) {
 		return playgroundState("renewed"), nil
 	}
-	gateway := NewPlaygroundGatewayService(repo, nil, nil)
+	gateway := NewPlaygroundGatewayService(repo)
 	gateway.browser = browser
 	gateway.waaManager = &aistudio.WAAManager{}
 	profile := repo.account.GetCredential("playground_profile_id")
@@ -68,21 +68,21 @@ func TestPlaygroundCacheMissRecoveryAndSlidingExpiry(t *testing.T) {
 		recoveries.Add(1)
 		return playgroundState("renewed"), nil
 	}
-	session, _, release, err := gateway.acquireSession(context.Background(), account)
+	session, release, err := gateway.acquireSession(context.Background(), account)
 	require.NoError(t, err)
 	release()
-	server.FastForward(4 * time.Minute)
-	session, _, release, err = gateway.acquireSession(context.Background(), account)
-	require.NoError(t, err)
-	release()
-	require.Zero(t, recoveries.Load())
-	server.FastForward(4 * time.Minute)
-	session, _, release, err = gateway.acquireSession(context.Background(), account)
+	server.FastForward(9 * time.Minute)
+	session, release, err = gateway.acquireSession(context.Background(), account)
 	require.NoError(t, err)
 	release()
 	require.Zero(t, recoveries.Load())
-	server.FastForward(5*time.Minute + time.Second)
-	session, _, release, err = gateway.acquireSession(context.Background(), account)
+	server.FastForward(9 * time.Minute)
+	session, release, err = gateway.acquireSession(context.Background(), account)
+	require.NoError(t, err)
+	release()
+	require.Zero(t, recoveries.Load())
+	server.FastForward(10*time.Minute + time.Second)
+	session, release, err = gateway.acquireSession(context.Background(), account)
 	require.NoError(t, err)
 	defer release()
 	defer session.Close()
@@ -94,14 +94,14 @@ func TestPlaygroundCacheMissRecoveryAndSlidingExpiry(t *testing.T) {
 func TestPlaygroundConcurrentRequestsReadRedisUpdates(t *testing.T) {
 	repo, account := newPlaygroundTestAccount(t)
 	gateway, _ := newPlaygroundTestGateway(t, repo)
-	first, _, release, err := gateway.acquireSession(context.Background(), account)
+	first, release, err := gateway.acquireSession(context.Background(), account)
 	require.NoError(t, err)
-	secondGateway := NewPlaygroundGatewayService(repo, nil, nil)
+	secondGateway := NewPlaygroundGatewayService(repo)
 	secondGateway.browser = gateway.browser
 	secondGateway.waaManager = &aistudio.WAAManager{}
 	result := make(chan error, 1)
 	go func() {
-		next, _, done, err := secondGateway.acquireSession(context.Background(), account)
+		next, done, err := secondGateway.acquireSession(context.Background(), account)
 		if err != nil {
 			result <- err
 			return
@@ -127,7 +127,7 @@ func TestPlaygroundConcurrentRequestsReadRedisUpdates(t *testing.T) {
 func TestPlaygroundExpiredLeaseCannotWriteCookies(t *testing.T) {
 	repo, account := newPlaygroundTestAccount(t)
 	gateway, server := newPlaygroundTestGateway(t, repo)
-	session, _, release, err := gateway.acquireSession(context.Background(), account)
+	session, release, err := gateway.acquireSession(context.Background(), account)
 	require.NoError(t, err)
 	defer release()
 	defer session.Close()
@@ -138,14 +138,14 @@ func TestPlaygroundExpiredLeaseCannotWriteCookies(t *testing.T) {
 func TestPlaygroundLoggedOutProfileDoesNotLaunchOnEveryRequest(t *testing.T) {
 	repo, account := newPlaygroundTestAccount(t)
 	gateway, server := newPlaygroundTestGateway(t, repo)
-	server.FastForward(6 * time.Minute)
+	server.FastForward(11 * time.Minute)
 	var count atomic.Int32
 	gateway.browser.recover = func(context.Context, string, string, string) (aistudio.StorageState, error) {
 		count.Add(1)
 		return aistudio.StorageState{}, aistudio.ErrAuthenticationRequired
 	}
 	for i := 0; i < 2; i++ {
-		_, _, _, err := gateway.acquireSession(context.Background(), account)
+		_, _, err := gateway.acquireSession(context.Background(), account)
 		require.ErrorIs(t, err, aistudio.ErrAuthenticationRequired)
 	}
 	require.EqualValues(t, 1, count.Load())
@@ -159,7 +159,7 @@ func TestPlaygroundLoginCannotIssueTwoGrants(t *testing.T) {
 func TestPlaygroundInvalidImportReturnsActionableBadRequest(t *testing.T) {
 	for _, credentials := range []map[string]any{{}, {"cookies": "secret"}, {"playground_storage_state": map[string]any{}}, {"playground_profile_id": uuid.NewString()}} {
 		service := &adminServiceImpl{}
-		_, err := service.normalizePlaygroundCredentials(context.Background(), PlatformGemini, AccountTypePlayground, "", nil, credentials, nil)
+		_, err := service.normalizePlaygroundCredentials(context.Background(), PlatformGemini, AccountTypePlayground, nil, credentials, nil)
 		require.Error(t, err)
 		require.True(t, infraerrors.IsBadRequest(err))
 		require.Equal(t, "PLAYGROUND_BROWSER_LOGIN_REQUIRED", infraerrors.Reason(err))
@@ -174,13 +174,13 @@ func TestPlaygroundLoginGrantBindsIdentityAndCannotBeReused(t *testing.T) {
 	token, err := gateway.browser.Cache.IssueGrant(context.Background(), aistudio.BrowserGrant{Profile: profile, Email: "test@example.test", Proxy: aistudio.ComputePayloadDigest("")})
 	require.NoError(t, err)
 	input := map[string]any{"playground_login_token": token, "playground_profile_id": "attacker"}
-	next, err := service.normalizePlaygroundCredentials(context.Background(), PlatformGemini, AccountTypePlayground, "", nil, input, nil)
+	next, err := service.normalizePlaygroundCredentials(context.Background(), PlatformGemini, AccountTypePlayground, nil, input, nil)
 	require.NoError(t, err)
 	require.Equal(t, profile, next["playground_profile_id"])
 	require.NotContains(t, next, "playground_login_token")
-	_, err = service.normalizePlaygroundCredentials(context.Background(), PlatformGemini, AccountTypePlayground, "", nil, input, nil)
+	_, err = service.normalizePlaygroundCredentials(context.Background(), PlatformGemini, AccountTypePlayground, nil, input, nil)
 	require.Error(t, err)
-	edit, err := service.normalizePlaygroundCredentials(context.Background(), PlatformGemini, AccountTypePlayground, "", nil, map[string]any{"playground_profile_id": "replacement"}, next)
+	edit, err := service.normalizePlaygroundCredentials(context.Background(), PlatformGemini, AccountTypePlayground, nil, map[string]any{"playground_profile_id": "replacement"}, next)
 	require.NoError(t, err)
 	require.Equal(t, profile, edit["playground_profile_id"])
 }

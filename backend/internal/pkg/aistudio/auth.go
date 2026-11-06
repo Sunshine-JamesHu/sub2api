@@ -45,12 +45,6 @@ func ParseCookies(raw string) map[string]string {
 	return result
 }
 
-// ExtractCookie retrieves a cookie value by name.
-func ExtractCookie(cookieStr, name string) string {
-	cookies := ParseCookies(cookieStr)
-	return cookies[name]
-}
-
 // BuildAuthorizationHeader calculates the SAPISIDHASH headers from cookies.
 func BuildAuthorizationHeader(cookieStr string, origin string, now time.Time) (string, error) {
 	if origin == "" {

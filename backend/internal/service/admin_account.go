@@ -525,7 +525,7 @@ func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccou
 	if err := NormalizeProtocolRulesCredentials(input.Credentials); err != nil {
 		return nil, err
 	}
-	input.Credentials, err = s.normalizePlaygroundCredentials(ctx, input.Platform, input.Type, input.PlaygroundChromeAccountID, input.ProxyID, input.Credentials, nil)
+	input.Credentials, err = s.normalizePlaygroundCredentials(ctx, input.Platform, input.Type, input.ProxyID, input.Credentials, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -658,8 +658,8 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 			effectivePlaygroundProxyID = nil
 		}
 	}
-	if input.Credentials != nil || input.PlaygroundChromeAccountID != "" {
-		input.Credentials, err = s.normalizePlaygroundCredentials(ctx, account.Platform, account.Type, input.PlaygroundChromeAccountID, effectivePlaygroundProxyID, input.Credentials, account.Credentials)
+	if input.Credentials != nil {
+		input.Credentials, err = s.normalizePlaygroundCredentials(ctx, account.Platform, account.Type, effectivePlaygroundProxyID, input.Credentials, account.Credentials)
 		if err != nil {
 			return nil, err
 		}

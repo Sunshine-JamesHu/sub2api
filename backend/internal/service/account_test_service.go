@@ -275,7 +275,7 @@ func NewAccountTestService(
 		claudeTokenProvider:       claudeTokenProvider,
 		grokTokenProvider:         grokTokenProvider,
 		antigravityGatewayService: antigravityGatewayService,
-		playgroundGatewayService:  NewPlaygroundGatewayService(accountRepo, nil, cfg),
+		playgroundGatewayService:  NewPlaygroundGatewayService(accountRepo),
 		httpUpstream:              httpUpstream,
 		cfg:                       cfg,
 		tlsFPProfileService:       tlsFPProfileService,

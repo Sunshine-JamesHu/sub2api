@@ -102,7 +102,7 @@ func NewGeminiMessagesCompatService(
 		rateLimitService:          rateLimitService,
 		httpUpstream:              httpUpstream,
 		antigravityGatewayService: antigravityGatewayService,
-		playgroundGatewayService:  NewPlaygroundGatewayService(accountRepo, rateLimitService, cfg),
+		playgroundGatewayService:  NewPlaygroundGatewayService(accountRepo),
 		cfg:                       cfg,
 		responseHeaderFilter:      compileResponseHeaderFilter(cfg),
 	}

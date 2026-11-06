@@ -30,10 +30,3 @@ func TestBuildAuthorizationHeader_MissingSAPISID(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "SAPISID")
 }
-
-func TestParseCookieHeaderErrorDoesNotExposeCredential(t *testing.T) {
-	_, err := ParseCookieText("SAPISID=private-cookie-value; private-malformed-credential")
-	require.EqualError(t, err, "Cookie 请求头第 2 项格式无效")
-	require.NotContains(t, err.Error(), "private-cookie-value")
-	require.NotContains(t, err.Error(), "private-malformed-credential")
-}

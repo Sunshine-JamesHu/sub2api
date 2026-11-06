@@ -6,8 +6,6 @@ import (
 	"golang.org/x/net/publicsuffix"
 	"net/http"
 	"net/url"
-	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -26,29 +24,6 @@ type StateCookie struct {
 	PartitionKey string  `json:"partitionKey,omitempty"`
 }
 
-// rotatingCookieNames 是 Google 每次响应都会轮换的 Cookie 名
-var rotatingCookieNames = map[string]bool{"SIDCC": true, "__Secure-1PSIDCC": true, "__Secure-3PSIDCC": true}
-
-// rotatingCookieWriteInterval 是只有轮换 Cookie 变化时磁盘状态的最短写入间隔
-const rotatingCookieWriteInterval = 30 * time.Second
-
-// onlyRotatingCookiesChanged 判断 next 与 previous 是否只在轮换 Cookie 的值与过期时间上不同
-func onlyRotatingCookiesChanged(previous []StateCookie, next []StateCookie) bool {
-	if len(previous) != len(next) {
-		return false
-	}
-	for index, cookie := range next {
-		old := previous[index]
-		if rotatingCookieNames[cookie.Name] {
-			old.Value, old.Expires = cookie.Value, cookie.Expires
-		}
-		if old != cookie {
-			return false
-		}
-	}
-	return true
-}
-
 // StorageItem 表示浏览器本地存储项
 type StorageItem struct {
 	Name  string `json:"name"`
@@ -61,86 +36,11 @@ type StorageOrigin struct {
 	LocalStorage []StorageItem `json:"localStorage"`
 }
 
-// StorageState 表示可原样写回的 Playwright storage state
+// StorageState 保存浏览器导出到 Redis 的 Cookie、本地存储和指纹。
 type StorageState struct {
-	Cookies []StateCookie   `json:"cookies"`
-	Origins []StorageOrigin `json:"origins"`
-	extra   map[string]json.RawMessage
-}
-
-// AuthSource 记录认证状态的来源
-type AuthSource struct {
-	Browser string `json:"browser"`
-	Root    string `json:"root,omitempty"`
-	Profile string `json:"profile,omitempty"`
-	Email   string `json:"email,omitempty"`
-	Locale  string `json:"locale,omitempty"`
-}
-
-// ChromeOAuthMaterial 保存 Chrome OAuth 续签材料，设备绑定密钥可为空
-type ChromeOAuthMaterial struct {
-	GaiaID            string `json:"gaia_id"`
-	RefreshToken      string `json:"refresh_token"`
-	WrappedBindingKey []byte `json:"wrapped_binding_key,omitempty"`
-}
-
-// AuthExtension 保存 aistudio2api 认证扩展
-type AuthExtension struct {
-	Source AuthSource           `json:"source"`
-	OAuth  *ChromeOAuthMaterial `json:"oauth,omitempty"`
-}
-
-const authExtensionKey = "aistudio2api"
-
-// SetAuthExtension 写入 aistudio2api 认证扩展
-func (s *StorageState) SetAuthExtension(extension AuthExtension) {
-	raw, _ := json.Marshal(extension)
-	if s.extra == nil {
-		s.extra = make(map[string]json.RawMessage)
-	}
-	s.extra[authExtensionKey] = raw
-}
-
-// AuthExtension 返回 aistudio2api 认证扩展
-func (s StorageState) AuthExtension() (AuthExtension, bool, error) {
-	raw, exists := s.extra[authExtensionKey]
-	if !exists {
-		return AuthExtension{}, false, nil
-	}
-	var extension AuthExtension
-	if err := json.Unmarshal(raw, &extension); err != nil {
-		return AuthExtension{}, true, fmt.Errorf("解析认证扩展: %w", err)
-	}
-	return extension, true, nil
-}
-
-// LoadStorageState 读取并校验 Playwright storage state
-func LoadStorageState(filePath string) (StorageState, error) {
-	data, err := os.ReadFile(filePath)
-	if err != nil {
-		return StorageState{}, fmt.Errorf("读取 storage state: %w", err)
-	}
-	var state StorageState
-	if err := json.Unmarshal(data, &state); err != nil {
-		return StorageState{}, fmt.Errorf("解析 storage state: %w", err)
-	}
-	if err := state.Validate(); err != nil {
-		return StorageState{}, err
-	}
-	return state, nil
-}
-
-// WriteStorageState 原子写回 Playwright storage state
-func WriteStorageState(filePath string, state StorageState) error {
-	if err := state.Validate(); err != nil {
-		return err
-	}
-	data, err := json.MarshalIndent(state, "", "  ")
-	if err != nil {
-		return fmt.Errorf("编码 storage state: %w", err)
-	}
-	data = append(data, '\n')
-	return atomicWriteFile(filePath, data, 0o600)
+	Cookies     []StateCookie   `json:"cookies"`
+	Origins     []StorageOrigin `json:"origins"`
+	Fingerprint json.RawMessage `json:"playground_fingerprint,omitempty"`
 }
 
 // Validate 校验 storage state 的浏览器字段
@@ -310,57 +210,9 @@ func (s *StorageState) MergeSetCookieHeaders(headers []string, sourceURL string,
 	return nil
 }
 
-// MarshalJSON 保留 storage state 的扩展根字段
-func (s StorageState) MarshalJSON() ([]byte, error) {
-	value := make(map[string]json.RawMessage, len(s.extra)+2)
-	for key, raw := range s.extra {
-		value[key] = append(json.RawMessage(nil), raw...)
-	}
-	cookieValues := s.Cookies
-	if cookieValues == nil {
-		cookieValues = []StateCookie{}
-	}
-	cookies, err := json.Marshal(cookieValues)
-	if err != nil {
-		return nil, err
-	}
-	originValues := s.Origins
-	if originValues == nil {
-		originValues = []StorageOrigin{}
-	}
-	origins, err := json.Marshal(originValues)
-	if err != nil {
-		return nil, err
-	}
-	value["cookies"] = cookies
-	value["origins"] = origins
-	return json.Marshal(value)
-}
-
-// UnmarshalJSON 解析 storage state 并保存扩展根字段
-func (s *StorageState) UnmarshalJSON(data []byte) error {
-	var value map[string]json.RawMessage
-	if err := json.Unmarshal(data, &value); err != nil {
-		return err
-	}
-	var cookies []StateCookie
-	if raw, ok := value["cookies"]; ok {
-		if err := json.Unmarshal(raw, &cookies); err != nil {
-			return err
-		}
-	}
-	var origins []StorageOrigin
-	if raw, ok := value["origins"]; ok {
-		if err := json.Unmarshal(raw, &origins); err != nil {
-			return err
-		}
-	}
-	delete(value, "cookies")
-	delete(value, "origins")
-	s.Cookies = cookies
-	s.Origins = origins
-	s.extra = value
-	return nil
+func googleCookieDomain(domain string) bool {
+	domain = strings.ToLower(strings.TrimPrefix(strings.TrimSpace(domain), "."))
+	return domain == "google.com" || strings.HasSuffix(domain, ".google.com")
 }
 
 func cookieDomainMatches(cookieDomain string, hostname string) bool {
@@ -402,39 +254,4 @@ func sameSiteText(value http.SameSite) string {
 	default:
 		return "Lax"
 	}
-}
-
-func atomicWriteFile(filePath string, data []byte, mode os.FileMode) error {
-	target, err := filepath.Abs(filePath)
-	if err != nil {
-		return fmt.Errorf("解析文件路径: %w", err)
-	}
-	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-		return fmt.Errorf("创建文件目录: %w", err)
-	}
-	temporary, err := os.CreateTemp(filepath.Dir(target), "."+filepath.Base(target)+"-*.tmp")
-	if err != nil {
-		return fmt.Errorf("创建临时文件: %w", err)
-	}
-	temporaryPath := temporary.Name()
-	defer os.Remove(temporaryPath)
-	if err := temporary.Chmod(mode); err != nil {
-		temporary.Close()
-		return fmt.Errorf("设置文件权限: %w", err)
-	}
-	if _, err := temporary.Write(data); err != nil {
-		temporary.Close()
-		return fmt.Errorf("写入临时文件: %w", err)
-	}
-	if err := temporary.Sync(); err != nil {
-		temporary.Close()
-		return fmt.Errorf("同步临时文件: %w", err)
-	}
-	if err := temporary.Close(); err != nil {
-		return fmt.Errorf("关闭临时文件: %w", err)
-	}
-	if err := os.Rename(temporaryPath, target); err != nil {
-		return fmt.Errorf("替换文件: %w", err)
-	}
-	return nil
 }

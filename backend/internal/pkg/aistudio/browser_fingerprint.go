@@ -11,9 +11,6 @@ func (s *StorageState) SetBrowserFingerprint(config map[string]any) error {
 	if err != nil {
 		return err
 	}
-	if s.extra == nil {
-		s.extra = map[string]json.RawMessage{}
-	}
-	s.extra["playground_fingerprint"] = raw
+	s.Fingerprint = raw
 	return nil
 }

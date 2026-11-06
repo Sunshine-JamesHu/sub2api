@@ -60,39 +60,11 @@ func TestSessionDecodesRawCompressedBody(t *testing.T) {
 	require.True(t, response.Uncompressed)
 }
 
-func TestSessionVerifiesActualImportedAccountEmail(t *testing.T) {
-	for _, test := range []struct {
-		name      string
-		status    int
-		page      string
-		wantError bool
-	}{
-		{"selected", 200, `<script>data={"oPEP7c":"selected@example.test"}</script>`, false},
-		{"different", 200, `{"oPEP7c":"other@example.test"}`, true},
-		{"missing", 200, `<html>Sign in</html>`, true},
-		{"signed out", 302, "", true},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			client := &http.Client{Transport: protocolRoundTrip(func(request *http.Request) (*http.Response, error) {
-				require.Equal(t, AIStudioOrigin+"/prompts/new_chat", request.URL.String())
-				return &http.Response{StatusCode: test.status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(test.page))}, nil
-			})}
-			session, err := NewSession(SessionOptions{Client: client})
-			require.NoError(t, err)
-			defer session.Close()
-			err = session.VerifyAccountEmail(context.Background(), "Selected@example.test")
-			if test.wantError {
-				require.Error(t, err)
-			} else {
-				require.NoError(t, err)
-			}
-		})
-	}
-}
-
-func TestSessionUsesImportedChromeLocale(t *testing.T) {
+func TestSessionUsesCapturedFingerprintLocale(t *testing.T) {
 	state := StorageState{}
-	state.SetAuthExtension(AuthExtension{Source: AuthSource{Browser: "chrome", Locale: "zh-CN"}})
+	fingerprint, err := buildCamoufoxConfig(camoufoxFirefoxMajor, "zh-CN", "America/Los_Angeles")
+	require.NoError(t, err)
+	require.NoError(t, state.SetBrowserFingerprint(fingerprint))
 	session, err := NewSession(SessionOptions{State: state})
 	require.NoError(t, err)
 	defer session.Close()
@@ -282,7 +254,7 @@ func TestDecoderThoughtEnumAndModels(t *testing.T) {
 func TestManagerLoadsFreshCredentialsAfterLease(t *testing.T) {
 	manager := &WAAManager{}
 	options := SessionOptions{Version: "v1", Client: &http.Client{}}
-	first, release, err := manager.Acquire(context.Background(), "account", options)
+	first, release, err := manager.AcquireFresh(context.Background(), "account", func() (SessionOptions, error) { return options, nil })
 	require.NoError(t, err)
 	entered := make(chan struct{})
 	loaded := make(chan string, 1)
@@ -347,8 +319,12 @@ func TestRPCResponseClassifiesAuthenticationAndRegion(t *testing.T) {
 }
 
 func TestSessionSignsWithOriginCookiesAndSendsTargetCookies(t *testing.T) {
-	state, err := ParseCookieText("__Secure-1PSID=sid; SAPISID=origin; __Secure-1PAPISID=one; __Secure-3PAPISID=three")
-	require.NoError(t, err)
+	state := StorageState{Cookies: []StateCookie{
+		{Name: "__Secure-1PSID", Value: "sid", Domain: ".google.com", Path: "/", Expires: -1, Secure: true},
+		{Name: "SAPISID", Value: "origin", Domain: ".google.com", Path: "/", Expires: -1, Secure: true},
+		{Name: "__Secure-1PAPISID", Value: "one", Domain: ".google.com", Path: "/", Expires: -1, Secure: true},
+		{Name: "__Secure-3PAPISID", Value: "three", Domain: ".google.com", Path: "/", Expires: -1, Secure: true},
+	}}
 	state.Cookies = append(state.Cookies, StateCookie{Name: "SAPISID", Value: "target", Domain: "alkalimakersuite-pa.clients6.google.com", Path: "/", Expires: -1, Secure: true})
 	client := &http.Client{Transport: protocolRoundTrip(func(req *http.Request) (*http.Response, error) {
 		origin, err := state.CookieHeader(AIStudioReferer, time.Now())
@@ -374,10 +350,16 @@ func TestPlaygroundSOCKS5HProxy(t *testing.T) {
 }
 
 func TestPageBootstrapUsesDynamicHeadersAndParallelChallenge(t *testing.T) {
-	state, err := ParseCookieText("__Secure-1PSID=sid; SAPISID=sap; __Secure-1PAPISID=one; __Secure-3PAPISID=three")
-	require.NoError(t, err)
+	state := StorageState{Cookies: []StateCookie{
+		{Name: "__Secure-1PSID", Value: "sid", Domain: ".google.com", Path: "/", Expires: -1, Secure: true},
+		{Name: "SAPISID", Value: "sap", Domain: ".google.com", Path: "/", Expires: -1, Secure: true},
+		{Name: "__Secure-1PAPISID", Value: "one", Domain: ".google.com", Path: "/", Expires: -1, Secure: true},
+		{Name: "__Secure-3PAPISID", Value: "three", Domain: ".google.com", Path: "/", Expires: -1, Secure: true},
+	}}
 	challengeStarted := make(chan struct{})
 	var once sync.Once
+	tierResponse := `[1]`
+	wantTier := "TIER1"
 	client := &http.Client{Transport: protocolRoundTrip(func(req *http.Request) (*http.Response, error) {
 		body := "[]"
 		status := 200
@@ -398,10 +380,19 @@ func TestPageBootstrapUsesDynamicHeadersAndParallelChallenge(t *testing.T) {
 			body = `[[["models/dynamic-model"]]]`
 		case strings.HasSuffix(req.URL.Path, "/GetLoggingContext"):
 			body = `["logging",7]`
+		case strings.HasSuffix(req.URL.Path, "/GetAiStudioBenefitTier"):
+			body = tierResponse
+		case strings.HasSuffix(req.URL.Path, "/GenerateContent"):
+			if req.Header.Get("X-AIStudio-G1-Tier") != wantTier {
+				return nil, errors.New("generation did not use the account's current benefit tier")
+			}
 		case strings.HasSuffix(req.URL.Path, "/GenerateAccessToken"), strings.HasSuffix(req.URL.Path, "/ListRecentApplets"), strings.HasSuffix(req.URL.Path, "/ListPrompts"):
 			status, body = 401, `[16,"OAuth error: unauthorized_client."]`
 		}
 		if req.Method == http.MethodPost && strings.Contains(req.URL.Host, "alkalimakersuite") {
+			if !strings.HasSuffix(req.URL.Path, "/GenerateContent") && req.Header.Get("X-AIStudio-G1-Tier") != "" {
+				return nil, errors.New("benefit tier leaked into a non-generation RPC")
+			}
 			if req.Header.Get("X-Goog-Api-Key") != "dynamic-page-key" || req.Header.Get("X-AIStudio-Visit-Id") == "" || !strings.Contains(req.Header.Get("Cookie"), "SIDCC=page-rotated") {
 				return nil, errors.New("page bootstrap did not share dynamic context and cookies")
 			}
@@ -423,4 +414,45 @@ func TestPageBootstrapUsesDynamicHeadersAndParallelChallenge(t *testing.T) {
 	require.Equal(t, []string{"models/dynamic-model"}, models)
 	require.NotEmpty(t, s.headers.Get("X-Goog-Ext-519733851-Bin"))
 	require.NotNil(t, s.pendingChallenge)
+	response, err = s.RPC(ctx, "GenerateContent", []byte("[]"))
+	require.NoError(t, err)
+	response.Body.Close()
+
+	// A recovered session must reload its benefit and discard a previous paid tier.
+	tierResponse, wantTier = `[0]`, ""
+	require.NoError(t, s.ReplaceState(state))
+	response, err = s.RPC(ctx, "GenerateContent", []byte("[]"))
+	require.NoError(t, err)
+	response.Body.Close()
+}
+
+func TestBenefitTierHeader(t *testing.T) {
+	for _, tc := range []struct {
+		raw, want string
+		wantError bool
+	}{
+		{`[]`, "", false},
+		{`[null]`, "", false},
+		{`[0]`, "", false},
+		{`[1]`, "TIER1", false},
+		{`[2]`, "TIER2", false},
+		{`[3]`, "TIER0", false},
+		{`[1,null,"extra"]`, "TIER1", false},
+		{`[4]`, "", true},
+		{`[-1]`, "", true},
+		{`["1"]`, "", true},
+		{`[1.5]`, "", true},
+		{`{}`, "", true},
+		{``, "", true},
+	} {
+		t.Run(tc.raw, func(t *testing.T) {
+			got, err := benefitTierHeader([]byte(tc.raw))
+			if tc.wantError {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, tc.want, got)
+		})
+	}
 }

@@ -2,6 +2,8 @@
 
 Playground now accepts **Camoufox browser login only**. Existing Cookie and Chrome-RT accounts must open their edit form, complete browser login and save. There is no automatic conversion from a copied Cookie to a renewable profile.
 
+The retired Chrome credential importer, manual Cookie-file parsers and disk session-export code have been removed. Redis stores exported sessions; the persistent Camoufox Profile is the recovery source.
+
 ## Runtime
 
 The generation process still requires the matching SpiderMonkey build. Camoufox is a separate process and is closed after login/capture, timeout or cancellation. At most two browsers are active in a server process; other recoveries wait with cancellation.
@@ -17,11 +19,13 @@ The installer downloads the pinned upstream release into `DATA_DIR/runtime/camou
 
 ## Storage and deployment
 
-* **Redis:** exported cookies, localStorage and fingerprint, with an atomic **five-minute sliding TTL**. Every request reads Redis and extends that TTL. Every received Set-Cookie is merged and written under the current lease. Redis errors fail the request; there is no fallback to old SQL cookies.
+* **Redis:** exported cookies, localStorage and fingerprint, with an atomic **ten-minute sliding TTL**. Every request reads Redis and extends that TTL. Every received Set-Cookie is merged and written under the current lease. Redis errors fail the request; there is no fallback to old SQL cookies.
 * **Disk:** each account has a persistent isolated Firefox Profile under `PLAYGROUND_PROFILE_DIR`, default `DATA_DIR/aistudio/profiles` (`data/aistudio/profiles` when DATA_DIR is unset). Docker uses `/app/data/aistudio/profiles/<profile UUID>`. The browser's own cookie database and login state necessarily remain inside this durable profile. Deleting this volume loses the ability to recover sessions.
 * **PostgreSQL:** profile ID, verified email, source metadata, model mapping and account configuration. Reauthorization removes old Cookie/storage-state/Chrome OAuth credentials from the account.
 
-Cache expiry means five minutes **without a cache touch**, not a forced browser launch every five minutes during continuous traffic. An authentication failure invalidates the cache immediately and permits one browser recovery/retry. Permission, quota and region errors do not trigger recovery. If Google requires login, a separate Redis marker prevents repeated browser launches for that profile for 24 hours; reauthorizing creates a new profile and bypasses the marker immediately.
+Cache expiry means ten minutes **without a cache touch**, not a forced browser launch every ten minutes during continuous traffic. An authentication failure invalidates the cache immediately and permits one browser recovery/retry. Permission, quota and region errors do not trigger recovery. If Google requires login, a separate Redis marker prevents repeated browser launches for that profile for 24 hours; reauthorizing creates a new profile and bypasses the marker immediately.
+
+Generation forwards the account's actual `GetAiStudioBenefitTier` result in `X-AIStudio-G1-Tier`, matching AIStudio2API: Pro uses `TIER1`, Ultra uses `TIER2`, Plus uses `TIER0`, and Free omits the header. The tier is reloaded after session recovery.
 
 Browser restoration verifies the same email before exporting state. It does not guarantee that Google will accept a saved login. MFA, CAPTCHA and expired Google login require interactive action in the account's browser window.
 
@@ -48,4 +52,4 @@ All supplied Compose variants mount `/app/data` (named volume or host `./data`),
 
 Unit/integration tests use synthetic sessions and miniredis to verify sliding expiry, cold recovery, cross-service serialization, stale-writer fencing, single-use login grants, and authentication-only retries. Set `CAMOUFOX_SMOKE=1` to run the opt-in browser test; it creates a new synthetic profile, verifies screenshot capture, closes/reopens it, and checks a test cookie survives. It never reads your existing Chrome profiles or Google credentials.
 
-Real Google acceptance needs a manual login followed by calls at 0/4/8 minutes, a gap longer than five minutes, and a service restart with the profile volume preserved. Observe successful responses and browser process exit; synthetic tests alone cannot establish long-term Google session stability.
+Real Google acceptance needs a manual login followed by calls at 0/9/18 minutes, a gap longer than ten minutes, and a service restart with the profile volume preserved. Observe successful responses and browser process exit; synthetic tests alone cannot establish long-term Google session stability.

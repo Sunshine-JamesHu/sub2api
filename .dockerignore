@@ -37,6 +37,9 @@ node_modules/
 
 # Go build cache (will be built in container)
 backend/vendor/
+backend/bin/
+backend/data/
+backend/logs/
 
 # Test files
 *_test.go
@@ -55,6 +58,8 @@ coverage/
 # Local config
 config.yaml
 config.local.yaml
+backend/config.yaml
+backend/config.local.yaml
 
 # Logs
 *.log

@@ -182,6 +182,9 @@ COPY --from=backend-builder --chown=sub2api:sub2api /app/backend/resources /app/
 COPY deploy/docker-entrypoint.sh /app/docker-entrypoint.sh
 RUN chmod +x /app/docker-entrypoint.sh && mkdir -p /app/data && chown sub2api:sub2api /app/data
 ENV DATA_DIR=/app/data
+# Keep the browser outside the data mount so a fresh persistent volume can use it.
+RUN DATA_DIR=/app /app/sub2api --install-playground-browser && \
+    chown -R sub2api:sub2api /app/runtime
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
     CMD curl -fsS http://localhost:${SERVER_PORT:-8080}/health >/dev/null || exit 1

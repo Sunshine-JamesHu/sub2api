@@ -11,7 +11,7 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-const SessionCacheTTL = 5 * time.Minute
+const SessionCacheTTL = 10 * time.Minute
 const sessionLeaseTTL = 30 * time.Second
 
 var ErrSessionLeaseLost = errors.New("Playground session lease lost; retry the request")
