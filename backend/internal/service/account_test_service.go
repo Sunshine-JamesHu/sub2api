@@ -143,6 +143,7 @@ type AccountTestService struct {
 	claudeTokenProvider       *ClaudeTokenProvider
 	grokTokenProvider         *GrokTokenProvider
 	antigravityGatewayService *AntigravityGatewayService
+	playgroundGatewayService  *PlaygroundGatewayService
 	httpUpstream              HTTPUpstream
 	cfg                       *config.Config
 	settingService            *SettingService
@@ -274,6 +275,7 @@ func NewAccountTestService(
 		claudeTokenProvider:       claudeTokenProvider,
 		grokTokenProvider:         grokTokenProvider,
 		antigravityGatewayService: antigravityGatewayService,
+		playgroundGatewayService:  NewPlaygroundGatewayService(accountRepo, nil, cfg),
 		httpUpstream:              httpUpstream,
 		cfg:                       cfg,
 		tlsFPProfileService:       tlsFPProfileService,
@@ -2431,6 +2433,20 @@ func (s *AccountTestService) testGeminiAccountConnection(c *gin.Context, account
 		req, err = s.buildGeminiOAuthRequest(ctx, account, testModelID, payload)
 	case AccountTypeServiceAccount:
 		req, err = s.buildGeminiServiceAccountRequest(ctx, account, testModelID, payload)
+	case AccountTypePlayground:
+		s.sendEvent(c, TestEvent{Type: "test_start", Model: testModelID})
+		if s.playgroundGatewayService == nil {
+			return s.sendErrorAndEnd(c, "Playground gateway service not configured")
+		}
+		result, testErr := s.playgroundGatewayService.TestConnectionWithPrompt(ctx, account, testModelID, prompt)
+		if testErr != nil {
+			return s.sendErrorAndEnd(c, testErr.Error())
+		}
+		if result.Text != "" {
+			s.sendEvent(c, TestEvent{Type: "content", Text: result.Text})
+		}
+		s.sendEvent(c, TestEvent{Type: "test_complete", Success: true})
+		return nil
 	default:
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Unsupported account type: %s", account.Type))
 	}

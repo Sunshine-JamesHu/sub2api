@@ -525,6 +525,10 @@ func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccou
 	if err := NormalizeProtocolRulesCredentials(input.Credentials); err != nil {
 		return nil, err
 	}
+	input.Credentials, err = s.normalizePlaygroundCredentials(ctx, input.Platform, input.Type, input.PlaygroundChromeAccountID, input.ProxyID, input.Credentials, nil)
+	if err != nil {
+		return nil, err
+	}
 	// Never persist ephemeral SSO/password secrets after OAuth conversion.
 	input.Credentials = SanitizeStoredCredentials(input.Platform, input.Credentials)
 
@@ -647,12 +651,30 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 	if input.Notes != nil {
 		account.Notes = normalizeAccountNotes(input.Notes)
 	}
+	effectivePlaygroundProxyID := account.ProxyID
+	if input.ProxyID != nil {
+		effectivePlaygroundProxyID = input.ProxyID
+		if *input.ProxyID == 0 {
+			effectivePlaygroundProxyID = nil
+		}
+	}
+	if input.Credentials != nil || input.PlaygroundChromeAccountID != "" {
+		input.Credentials, err = s.normalizePlaygroundCredentials(ctx, account.Platform, account.Type, input.PlaygroundChromeAccountID, effectivePlaygroundProxyID, input.Credentials, account.Credentials)
+		if err != nil {
+			return nil, err
+		}
+	}
 	if account.IsCredentialShadow() && input.Credentials != nil {
 		account.Credentials = sanitizeSparkShadowCredentials(input.Credentials)
 	} else if len(input.Credentials) > 0 {
 		// 敏感子键采用"incoming 没提供就保留"的合并语义：前端响应已脱敏，
 		// 全对象 PUT 编辑时不会再带回 token，避免覆盖时清空已有凭证。
 		account.Credentials = MergePreservingSensitiveCreds(account.Credentials, input.Credentials)
+		if account.Platform == PlatformGemini && account.Type == AccountTypePlayground {
+			for _, key := range []string{"cookies", "cookie", "playground_storage_state", "refresh_token", "wrapped_binding_key", "gaia_id"} {
+				delete(account.Credentials, key)
+			}
+		}
 		// 校验并规范化请求头覆写配置（header 名小写化、格式检查）
 		if err := NormalizeHeaderOverrideCredentials(account.Credentials); err != nil {
 			return nil, err
@@ -1296,11 +1318,11 @@ func (s *adminServiceImpl) DeleteAccount(ctx context.Context, id int64) error {
 		return fmt.Errorf("list spark shadows for cascade delete: %w", err)
 	}
 	for _, shadow := range shadows {
-		if err := s.accountRepo.Delete(ctx, shadow.ID); err != nil {
+		if err := s.deleteAccountAndProfile(ctx, shadow.ID); err != nil {
 			return fmt.Errorf("cascade delete spark shadow %d: %w", shadow.ID, err)
 		}
 	}
-	if err := s.accountRepo.Delete(ctx, id); err != nil {
+	if err := s.deleteAccountAndProfile(ctx, id); err != nil {
 		return err
 	}
 	return nil

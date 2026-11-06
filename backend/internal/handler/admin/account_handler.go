@@ -8,15 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
-	"log/slog"
-	"net/http"
-	"sort"
-	"strconv"
-	"strings"
-	"sync"
-	"time"
-
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/domain"
 	"github.com/Wei-Shaw/sub2api/internal/handler/dto"
@@ -33,6 +24,14 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"golang.org/x/sync/errgroup"
+	"log"
+	"log/slog"
+	"net/http"
+	"sort"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
 )
 
 // OAuthHandler handles OAuth-related operations for accounts
@@ -49,6 +48,7 @@ func NewOAuthHandler(oauthService *service.OAuthService) *OAuthHandler {
 
 // AccountHandler handles admin account management
 type AccountHandler struct {
+	playgroundBrowser       *service.PlaygroundBrowserService
 	claudeResetCredits      claudeResetReader
 	adminService            service.AdminService
 	oauthService            *service.OAuthService
@@ -121,44 +121,46 @@ func NewAccountHandler(
 
 // CreateAccountRequest represents create account request
 type CreateAccountRequest struct {
-	Name                    string         `json:"name" binding:"required"`
-	Notes                   *string        `json:"notes"`
-	Platform                string         `json:"platform" binding:"required"`
-	Type                    string         `json:"type" binding:"required,oneof=oauth setup-token apikey upstream bedrock service_account"`
-	Credentials             map[string]any `json:"credentials" binding:"required"`
-	Extra                   map[string]any `json:"extra"`
-	ProxyID                 *int64         `json:"proxy_id"`
-	Concurrency             int            `json:"concurrency"`
-	Priority                int            `json:"priority"`
-	RateMultiplier          *float64       `json:"rate_multiplier"`
-	LoadFactor              *int           `json:"load_factor"`
-	GroupIDs                []int64        `json:"group_ids"`
-	ExpiresAt               *int64         `json:"expires_at"`
-	AutoPauseOnExpired      *bool          `json:"auto_pause_on_expired"`
-	ProbeEnabled            *bool          `json:"upstream_billing_probe_enabled"`
-	ConfirmMixedChannelRisk *bool          `json:"confirm_mixed_channel_risk"` // 用户确认混合渠道风险
+	PlaygroundChromeAccountID string         `json:"playground_chrome_account_id"`
+	Name                      string         `json:"name" binding:"required"`
+	Notes                     *string        `json:"notes"`
+	Platform                  string         `json:"platform" binding:"required"`
+	Type                      string         `json:"type" binding:"required,oneof=oauth setup-token apikey upstream bedrock service_account playground"`
+	Credentials               map[string]any `json:"credentials" binding:"required"`
+	Extra                     map[string]any `json:"extra"`
+	ProxyID                   *int64         `json:"proxy_id"`
+	Concurrency               int            `json:"concurrency"`
+	Priority                  int            `json:"priority"`
+	RateMultiplier            *float64       `json:"rate_multiplier"`
+	LoadFactor                *int           `json:"load_factor"`
+	GroupIDs                  []int64        `json:"group_ids"`
+	ExpiresAt                 *int64         `json:"expires_at"`
+	AutoPauseOnExpired        *bool          `json:"auto_pause_on_expired"`
+	ProbeEnabled              *bool          `json:"upstream_billing_probe_enabled"`
+	ConfirmMixedChannelRisk   *bool          `json:"confirm_mixed_channel_risk"` // 用户确认混合渠道风险
 }
 
 // UpdateAccountRequest represents update account request
 // 使用指针类型来区分"未提供"和"设置为0"
 type UpdateAccountRequest struct {
-	Name                    string         `json:"name"`
-	Notes                   *string        `json:"notes"`
-	Type                    string         `json:"type" binding:"omitempty,oneof=oauth setup-token apikey upstream bedrock service_account"`
-	Credentials             map[string]any `json:"credentials"`
-	Extra                   map[string]any `json:"extra"`
-	ProxyID                 *int64         `json:"proxy_id"`
-	Concurrency             *int           `json:"concurrency"`
-	Priority                *int           `json:"priority"`
-	RateMultiplier          *float64       `json:"rate_multiplier"`
-	LoadFactor              *int           `json:"load_factor"`
-	Status                  string         `json:"status" binding:"omitempty,oneof=active inactive error"`
-	GroupIDs                *[]int64       `json:"group_ids"`
-	ExpiresAt               *int64         `json:"expires_at"`
-	AutoPauseOnExpired      *bool          `json:"auto_pause_on_expired"`
-	ProbeEnabled            *bool          `json:"upstream_billing_probe_enabled"`
-	RateSyncEnabled         *bool          `json:"upstream_billing_rate_sync_enabled"`
-	ConfirmMixedChannelRisk *bool          `json:"confirm_mixed_channel_risk"` // 用户确认混合渠道风险
+	PlaygroundChromeAccountID string         `json:"playground_chrome_account_id"`
+	Name                      string         `json:"name"`
+	Notes                     *string        `json:"notes"`
+	Type                      string         `json:"type" binding:"omitempty,oneof=oauth setup-token apikey upstream bedrock service_account playground"`
+	Credentials               map[string]any `json:"credentials"`
+	Extra                     map[string]any `json:"extra"`
+	ProxyID                   *int64         `json:"proxy_id"`
+	Concurrency               *int           `json:"concurrency"`
+	Priority                  *int           `json:"priority"`
+	RateMultiplier            *float64       `json:"rate_multiplier"`
+	LoadFactor                *int           `json:"load_factor"`
+	Status                    string         `json:"status" binding:"omitempty,oneof=active inactive error"`
+	GroupIDs                  *[]int64       `json:"group_ids"`
+	ExpiresAt                 *int64         `json:"expires_at"`
+	AutoPauseOnExpired        *bool          `json:"auto_pause_on_expired"`
+	ProbeEnabled              *bool          `json:"upstream_billing_probe_enabled"`
+	RateSyncEnabled           *bool          `json:"upstream_billing_rate_sync_enabled"`
+	ConfirmMixedChannelRisk   *bool          `json:"confirm_mixed_channel_risk"` // 用户确认混合渠道风险
 }
 
 // BulkUpdateAccountsRequest represents the payload for bulk editing accounts
@@ -1027,6 +1029,7 @@ func (h *AccountHandler) Create(c *gin.Context) {
 		response.ErrorFrom(c, err)
 		return
 	}
+
 	if req.RateMultiplier != nil && *req.RateMultiplier < 0 {
 		response.BadRequest(c, "rate_multiplier must be >= 0")
 		return
@@ -1047,22 +1050,23 @@ func (h *AccountHandler) Create(c *gin.Context) {
 
 	result, err := executeAdminIdempotent(c, "admin.accounts.create", req, service.DefaultWriteIdempotencyTTL(), func(ctx context.Context) (any, error) {
 		account, execErr := h.adminService.CreateAccount(ctx, &service.CreateAccountInput{
-			Name:                  req.Name,
-			Notes:                 req.Notes,
-			Platform:              req.Platform,
-			Type:                  req.Type,
-			Credentials:           req.Credentials,
-			Extra:                 req.Extra,
-			ProxyID:               req.ProxyID,
-			Concurrency:           req.Concurrency,
-			Priority:              req.Priority,
-			RateMultiplier:        req.RateMultiplier,
-			LoadFactor:            req.LoadFactor,
-			GroupIDs:              req.GroupIDs,
-			ExpiresAt:             req.ExpiresAt,
-			AutoPauseOnExpired:    req.AutoPauseOnExpired,
-			ProbeEnabled:          req.ProbeEnabled,
-			SkipMixedChannelCheck: skipCheck,
+			PlaygroundChromeAccountID: req.PlaygroundChromeAccountID,
+			Name:                      req.Name,
+			Notes:                     req.Notes,
+			Platform:                  req.Platform,
+			Type:                      req.Type,
+			Credentials:               req.Credentials,
+			Extra:                     req.Extra,
+			ProxyID:                   req.ProxyID,
+			Concurrency:               req.Concurrency,
+			Priority:                  req.Priority,
+			RateMultiplier:            req.RateMultiplier,
+			LoadFactor:                req.LoadFactor,
+			GroupIDs:                  req.GroupIDs,
+			ExpiresAt:                 req.ExpiresAt,
+			AutoPauseOnExpired:        req.AutoPauseOnExpired,
+			ProbeEnabled:              req.ProbeEnabled,
+			SkipMixedChannelCheck:     skipCheck,
 		})
 		if execErr != nil {
 			return nil, execErr
@@ -1164,6 +1168,7 @@ func (h *AccountHandler) Update(c *gin.Context) {
 		response.BadRequest(c, "Invalid request: "+err.Error())
 		return
 	}
+
 	if req.RateMultiplier != nil && *req.RateMultiplier < 0 {
 		response.BadRequest(c, "rate_multiplier must be >= 0")
 		return
@@ -1179,23 +1184,24 @@ func (h *AccountHandler) Update(c *gin.Context) {
 	skipCheck := req.ConfirmMixedChannelRisk != nil && *req.ConfirmMixedChannelRisk
 
 	account, err := h.adminService.UpdateAccount(c.Request.Context(), accountID, &service.UpdateAccountInput{
-		Name:                  req.Name,
-		Notes:                 req.Notes,
-		Type:                  req.Type,
-		Credentials:           req.Credentials,
-		Extra:                 req.Extra,
-		ProxyID:               req.ProxyID,
-		Concurrency:           req.Concurrency, // 指针类型，nil 表示未提供
-		Priority:              req.Priority,    // 指针类型，nil 表示未提供
-		RateMultiplier:        req.RateMultiplier,
-		LoadFactor:            req.LoadFactor,
-		Status:                req.Status,
-		GroupIDs:              req.GroupIDs,
-		ExpiresAt:             req.ExpiresAt,
-		AutoPauseOnExpired:    req.AutoPauseOnExpired,
-		ProbeEnabled:          req.ProbeEnabled,
-		RateSyncEnabled:       req.RateSyncEnabled,
-		SkipMixedChannelCheck: skipCheck,
+		PlaygroundChromeAccountID: req.PlaygroundChromeAccountID,
+		Name:                      req.Name,
+		Notes:                     req.Notes,
+		Type:                      req.Type,
+		Credentials:               req.Credentials,
+		Extra:                     req.Extra,
+		ProxyID:                   req.ProxyID,
+		Concurrency:               req.Concurrency, // 指针类型，nil 表示未提供
+		Priority:                  req.Priority,    // 指针类型，nil 表示未提供
+		RateMultiplier:            req.RateMultiplier,
+		LoadFactor:                req.LoadFactor,
+		Status:                    req.Status,
+		GroupIDs:                  req.GroupIDs,
+		ExpiresAt:                 req.ExpiresAt,
+		AutoPauseOnExpired:        req.AutoPauseOnExpired,
+		ProbeEnabled:              req.ProbeEnabled,
+		RateSyncEnabled:           req.RateSyncEnabled,
+		SkipMixedChannelCheck:     skipCheck,
 	})
 	if err != nil {
 		// 检查是否为混合渠道错误
@@ -3110,7 +3116,9 @@ func (h *AccountHandler) SyncUpstreamModelsPreview(c *gin.Context) {
 		Platform     string            `json:"platform" binding:"required"`
 		Type         string            `json:"type" binding:"required"`
 		BaseURL      string            `json:"base_url"`
-		APIKey       string            `json:"api_key" binding:"required"`
+		APIKey       string            `json:"api_key"`
+		Cookies      string            `json:"cookies"`
+		ProxyID      *int64            `json:"proxy_id"`
 		ModelMapping map[string]string `json:"model_mapping"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -3125,11 +3133,18 @@ func (h *AccountHandler) SyncUpstreamModelsPreview(c *gin.Context) {
 	tempAccount := &service.Account{
 		Platform: req.Platform,
 		Type:     req.Type,
+		ProxyID:  req.ProxyID,
 		Credentials: map[string]any{
 			"api_key":       req.APIKey,
+			"cookies":       req.Cookies,
 			"base_url":      req.BaseURL,
 			"model_mapping": modelMapping,
 		},
+	}
+	if req.ProxyID != nil {
+		if proxy, err := h.adminService.GetProxy(c.Request.Context(), *req.ProxyID); err == nil {
+			tempAccount.Proxy = proxy
+		}
 	}
 
 	if h.accountTestService == nil {

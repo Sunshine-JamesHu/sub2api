@@ -6,7 +6,7 @@
     @close="handleClose"
   >
     <!-- Step Indicator for OAuth accounts -->
-    <div v-if="isOAuthFlow" class="mb-6 flex items-center justify-center">
+    <div v-if="isOAuthFlow || isPlaygroundFlow" class="mb-6 flex items-center justify-center">
       <div class="flex items-center space-x-4">
         <div class="flex items-center">
           <div
@@ -32,7 +32,7 @@
             2
           </div>
           <span class="ml-2 text-sm font-medium text-gray-700 dark:text-gray-300">{{
-            oauthStepTitle
+            isPlaygroundFlow ? t('admin.accounts.gemini.playground.authTitle') : oauthStepTitle
           }}</span>
         </div>
       </div>
@@ -735,7 +735,7 @@
             {{ t('admin.accounts.gemini.helpButton') }}
           </button>
         </div>
-        <div class="mt-2 grid grid-cols-3 gap-3" data-tour="account-form-type">
+        <div class="mt-2 grid grid-cols-2 md:grid-cols-4 gap-3" data-tour="account-form-type">
           <button
             type="button"
             @click="accountCategory = 'oauth-based'"
@@ -837,6 +837,43 @@
               </span>
             </div>
           </button>
+
+          <button
+            type="button"
+            @click="handleSelectGeminiPlayground"
+            :class="[
+              'flex items-center gap-3 rounded-lg border-2 p-3 text-left transition-all',
+              accountCategory === 'playground'
+                ? 'border-emerald-500 bg-emerald-50 dark:bg-emerald-900/20'
+                : 'border-gray-200 hover:border-emerald-300 dark:border-dark-600 dark:hover:border-emerald-700'
+            ]"
+          >
+            <div
+              :class="[
+                'flex h-8 w-8 shrink-0 items-center justify-center rounded-lg',
+                accountCategory === 'playground'
+                  ? 'bg-emerald-500 text-white'
+                  : 'bg-gray-100 text-gray-500 dark:bg-dark-600 dark:text-gray-400'
+              ]"
+            >
+              <Icon name="play" size="sm" />
+            </div>
+            <div>
+              <span class="block text-sm font-medium text-gray-900 dark:text-white">
+                {{ t('admin.accounts.gemini.accountType.playgroundTitle') }}
+              </span>
+              <span class="text-xs text-gray-500 dark:text-gray-400">
+                {{ t('admin.accounts.gemini.accountType.playgroundDesc') }}
+              </span>
+            </div>
+          </button>
+        </div>
+
+        <div
+          v-if="accountCategory === 'playground'"
+          class="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-800 dark:border-emerald-800/40 dark:bg-emerald-900/20 dark:text-emerald-200"
+        >
+          <p>{{ t('admin.accounts.gemini.accountType.playgroundNote') }}</p>
         </div>
 
         <div
@@ -1381,6 +1418,11 @@
         </template>
       </div>
 
+      <!-- Playground authorization is collected after the basic configuration. -->
+      <div v-if="form.platform === 'gemini' && accountCategory === 'playground'" class="space-y-4">
+        <p class="input-hint">{{ t('admin.accounts.gemini.playground.authNextHint') }}</p>
+      </div>
+
       <!-- Antigravity model restriction (applies to OAuth + Upstream) -->
       <!-- Antigravity 只支持模型映射模式，不支持白名单模式 -->
       <div v-if="form.platform === 'antigravity'" class="border-t border-gray-200 pt-4 dark:border-dark-600">
@@ -1588,8 +1630,10 @@
           </select>
           <p class="input-hint">{{ t('admin.accounts.gemini.tier.aiStudioHint') }}</p>
         </div>
+      </div>
 
-        <!-- Model Restriction Section (Antigravity 已在上层条件排除) -->
+      <!-- Model Restriction & Pool Mode Section (for apikey and playground) -->
+      <div v-if="(form.type === 'apikey' || form.type === 'playground') && form.platform !== 'antigravity'" class="space-y-4">
         <div class="border-t border-gray-200 pt-4 dark:border-dark-600">
           <label class="input-label">{{ t('admin.accounts.modelRestriction') }}</label>
 
@@ -3762,7 +3806,13 @@
 
     <!-- Step 2: OAuth Authorization -->
     <div v-else class="space-y-5">
+      <PlaygroundAuthorization
+        v-if="isPlaygroundFlow"
+        v-model:login-token="playgroundLoginToken"
+        :proxy-id="form.proxy_id"
+      />
       <OAuthAuthorizationFlow
+        v-else
         ref="oauthFlowRef"
         :add-method="form.platform === 'anthropic' ? addMethod : 'oauth'"
         :auth-url="currentAuthUrl"
@@ -3832,7 +3882,7 @@
             ></path>
           </svg>
           {{
-            isOAuthFlow
+            isOAuthFlow || isPlaygroundFlow
               ? t('common.next')
               : submitting
                 ? t('admin.accounts.creating')
@@ -3844,8 +3894,11 @@
         <button type="button" class="btn btn-secondary" @click="goBackToBasicInfo">
           {{ t('common.back') }}
         </button>
+        <button v-if="isPlaygroundFlow" type="button" class="btn btn-primary" :disabled="submitting" @click="handleSubmit">
+          {{ submitting ? t('admin.accounts.creating') : t('admin.accounts.oauth.completeAuth') }}
+        </button>
         <button
-          v-if="isManualInputMethod"
+          v-else-if="isManualInputMethod"
           type="button"
           :disabled="!canExchangeCode"
           class="btn btn-primary"
@@ -4159,6 +4212,7 @@ import Icon from '@/components/icons/Icon.vue'
 import ProxySelector from '@/components/common/ProxySelector.vue'
 import ProxyAdBanner from '@/components/common/ProxyAdBanner.vue'
 import GroupSelector from '@/components/common/GroupSelector.vue'
+import PlaygroundAuthorization from '@/components/account/PlaygroundAuthorization.vue'
 import ModelWhitelistSelector from '@/components/account/ModelWhitelistSelector.vue'
 import QuotaLimitCard from '@/components/account/QuotaLimitCard.vue'
 import Toggle from '@/components/common/Toggle.vue'
@@ -4391,7 +4445,7 @@ interface TempUnschedRuleForm {
 // State
 const step = ref(1)
 const submitting = ref(false)
-const accountCategory = ref<'oauth-based' | 'apikey' | 'bedrock' | 'service_account'>('oauth-based') // UI selection for account category
+const accountCategory = ref<'oauth-based' | 'apikey' | 'bedrock' | 'service_account' | 'playground'>('oauth-based') // UI selection for account category
 const addMethod = ref<AddMethod>('oauth') // For oauth-based: 'oauth' or 'setup-token'
 const apiKeyBaseUrl = ref('https://api.anthropic.com')
 const apiKeyValue = ref('')
@@ -4600,6 +4654,7 @@ function onCnPresetSelect(preset: { mode: CnAccountMode; protocol: CnApiProtocol
 }
 
 const syncPreviewCredentials = computed(() => {
+  if (form.platform === 'gemini' && accountCategory.value === 'playground') return undefined
   if (!apiKeyValue.value) return undefined
   const baseUrl = isMultiProtocolPlatform.value && apiProtocol.value === 'adaptive'
     ? adaptiveBaseUrls.value.chat_completions.trim() || apiKeyBaseUrl.value.trim()
@@ -4773,6 +4828,13 @@ const vertexLocation = ref('global')
 const vertexServiceAccountDragActive = ref(false)
 const vertexAuthMode = ref<'service_account' | 'apikey'>('service_account')
 const vertexApiKey = ref('')
+const playgroundLoginToken = ref('')
+watch(() => props.show, () => { playgroundLoginToken.value = '' })
+const handleSelectGeminiPlayground = () => {
+  accountCategory.value = 'playground'
+  form.type = 'playground' as AccountType
+  form.concurrency = 1
+}
 // API Key 认证只对 Gemini 平台开放，Anthropic 平台的 Vertex 账号始终使用 Service Account JSON。
 const vertexUsesApiKey = computed(() => form.platform === 'gemini' && vertexAuthMode.value === 'apikey')
 // 两种认证方式的 Project ID 来源不同（JSON 读取 / 手填），切换时清空凭证字段避免串用。
@@ -5046,6 +5108,7 @@ const isOAuthFlow = computed(() => {
   }
   return accountCategory.value === 'oauth-based'
 })
+const isPlaygroundFlow = computed(() => form.platform === 'gemini' && accountCategory.value === 'playground')
 
 const isGrokSSOInputMethod = computed(() => form.platform === 'grok' && oauthFlowRef.value?.inputMethod === 'sso_cookie')
 
@@ -5122,6 +5185,8 @@ watch(
     }
     if ((form.platform === 'gemini' || form.platform === 'anthropic') && category === 'service_account') {
       form.type = 'service_account' as AccountType
+    } else if (category === 'playground') {
+      form.type = 'playground' as AccountType
     } else if (category === 'oauth-based') {
       form.type = form.platform === 'anthropic' ? method as AccountType : 'oauth'
     } else {
@@ -5548,7 +5613,7 @@ const ensureAntigravityMixedChannelConfirmed = async (onConfirm: () => Promise<v
     })
     return false
   } catch (error: any) {
-    appStore.showError(error.response?.data?.message || error.response?.data?.detail || t('admin.accounts.failedToCreate'))
+    appStore.showError(error.response?.data?.message || error.response?.data?.detail || error.message || t('admin.accounts.failedToCreate'))
     return false
   }
 }
@@ -5601,7 +5666,7 @@ const submitCreateAccount = async (payload: CreateAccountRequest) => {
       })
       return
     }
-    appStore.showError(error.response?.data?.message || error.response?.data?.detail || t('admin.accounts.failedToCreate'))
+    appStore.showError(error.response?.data?.message || error.response?.data?.detail || error.message || t('admin.accounts.failedToCreate'))
   } finally {
     submitting.value = false
   }
@@ -5939,6 +6004,14 @@ const handleVertexServiceAccountDrop = async (event: DragEvent) => {
 }
 
 const handleSubmit = async () => {
+  if (isPlaygroundFlow.value && step.value === 1) {
+    if (!form.name.trim()) {
+      appStore.showError(t('admin.accounts.pleaseEnterAccountName'))
+      return
+    }
+    step.value = 2
+    return
+  }
   // For OAuth-based type, handle OAuth flow (goes to step 2)
   if (isOAuthFlow.value) {
     if (!isGrokSSOInputMethod.value && !form.name.trim()) {
@@ -6097,6 +6170,34 @@ const handleSubmit = async () => {
       tier_id: 'vertex'
     }
     await createAccountAndFinish(form.platform, 'service_account' as AccountType, credentials)
+    return
+  }
+
+  if (form.platform === 'gemini' && accountCategory.value === 'playground') {
+    if (!form.name.trim()) {
+      appStore.showError(t('admin.accounts.pleaseEnterAccountName'))
+      return
+    }
+    if (!playgroundLoginToken.value) {
+      appStore.showError(t('admin.accounts.gemini.playground.loginRequired'))
+      return
+    }
+    const credentials: Record<string, unknown> = { playground_login_token: playgroundLoginToken.value }
+    const modelMapping = buildModelMappingObject(
+      modelRestrictionMode.value, allowedModels.value, modelMappings.value
+    )
+    if (modelMapping) {
+      credentials.model_mapping = modelMapping
+    }
+    if (poolModeEnabled.value) {
+      credentials.pool_mode = true
+      credentials.pool_mode_retry_count = normalizePoolModeRetryCount(poolModeRetryCount.value)
+      const parsedRetryStatusCodes = parsePoolModeRetryStatusCodes(poolModeRetryStatusCodesInput.value)
+      if (parsedRetryStatusCodes.length > 0) {
+        credentials.pool_mode_retry_status_codes = parsedRetryStatusCodes
+      }
+    }
+    await createAccountAndFinish('gemini', 'playground' as AccountType, credentials)
     return
   }
 

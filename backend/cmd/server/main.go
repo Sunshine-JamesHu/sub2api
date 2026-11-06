@@ -18,6 +18,8 @@ import (
 	_ "github.com/Wei-Shaw/sub2api/ent/runtime"
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/handler"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/aistudio"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/camoufox"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/setup"
@@ -59,7 +61,26 @@ func main() {
 	// Parse command line flags
 	setupMode := flag.Bool("setup", false, "Run setup wizard in CLI mode")
 	showVersion := flag.Bool("version", false, "Show version information")
+	checkPlayground := flag.Bool("check-playground-runtime", false, "Initialize SpiderMonkey and evaluate JavaScript, then exit")
+	installBrowser := flag.Bool("install-playground-browser", false, "Install the matching Camoufox browser in DATA_DIR, then exit")
 	flag.Parse()
+	if *installBrowser {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+		defer cancel()
+		path, err := camoufox.FindExecutable(ctx, os.Getenv("CAMOUFOX_DOWNLOAD_PROXY"))
+		if err != nil {
+			log.Fatal(err)
+		}
+		log.Printf("Camoufox ready: %s", path)
+		return
+	}
+	if *checkPlayground {
+		if err := aistudio.CheckRuntime(); err != nil {
+			log.Fatal(err)
+		}
+		log.Println("Playground SpiderMonkey runtime: OK")
+		return
+	}
 
 	if *showVersion {
 		log.Printf("Sub2API %s (commit: %s, built: %s)\n", Version, Commit, Date)

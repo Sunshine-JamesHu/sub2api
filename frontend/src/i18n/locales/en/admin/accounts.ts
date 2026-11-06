@@ -1512,7 +1512,26 @@ export default {
           apiKeyNote:
             'Best for light testing. Free tier has strict rate limits and data may be used for training.',
           apiKeyLink: 'Get API Key',
-          quotaLink: 'Quota guide'
+          quotaLink: 'Quota guide',
+          playgroundTitle: 'Playground (Web Session)',
+          playgroundDesc: 'AI Studio Playground with isolated Camoufox login and automatic session recovery.',
+          playgroundNote: 'Import Chrome OAuth and device binding materials to maintain the Google web session.'
+        },
+        playground: {
+          authTitle: "Camoufox browser login",
+          authNextHint: "Enter the account name, proxy and groups, then sign in to Google in an isolated browser.",
+          authConfigured: "An isolated browser session is linked. Sessions recover automatically when possible; sign in again if Google requests verification.",
+          authNotConfigured: "Sign in using the isolated browser. Existing Cookie accounts need reauthorization.",
+          authChange: "Sign in again",
+          browserLogin: "Open login window",
+          browserStarting: "Starting browser…",
+          browserHelp: "Click the view to type, paste, scroll, or use Tab and Enter. Press Esc to leave the view. Once AI Studio opens, select Finish login. The window closes automatically after ten minutes.",
+          browserView: "Google sign-in browser",
+          browserFinish: "Finish login",
+          browserReady: "Login verified and browser closed. Save the account to continue.",
+          browserFailed: "Browser login failed. Please try again.",
+          loginRequired: "Complete Camoufox login first.",
+          runtimeMissing: "SpiderMonkey runtime is unavailable."
         },
         oauthType: {
           builtInTitle: 'Built-in OAuth (Gemini CLI / Code Assist)',

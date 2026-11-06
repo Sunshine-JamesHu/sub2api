@@ -200,6 +200,26 @@ async function openCodexImportStep(toggleClicks = 0) {
 }
 
 describe('CreateAccountModal OpenAI long-context billing', () => {
+  it('collects a verified Camoufox login grant only after Next', async () => {
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'Gemini')
+    await selectButtonByText(wrapper, 'admin.accounts.gemini.accountType.playgroundTitle')
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('Renewable Playground')
+    expect(wrapper.findComponent({ name: 'PlaygroundAuthorization' }).exists()).toBe(false)
+    expect(wrapper.find('textarea[placeholder="admin.accounts.gemini.playground.cookiesPlaceholder"]').exists()).toBe(false)
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    expect(createAccountMock).not.toHaveBeenCalled()
+    const authorization = wrapper.getComponent({ name: 'PlaygroundAuthorization' })
+    authorization.vm.$emit('update:loginToken', 'verified-login-token')
+    await wrapper.vm.$nextTick()
+    await selectButtonByText(wrapper, 'admin.accounts.oauth.completeAuth')
+    await flushPromises()
+    expect(createAccountMock.mock.calls[0]?.[0]).toMatchObject({
+      platform: 'gemini', type: 'playground', credentials: { playground_login_token: 'verified-login-token' }
+    })
+    expect(createAccountMock.mock.calls[0]?.[0]?.credentials).not.toHaveProperty('cookies')
+    wrapper.unmount()
+  })
   beforeEach(() => {
     authIsSimpleMode.value = true
     createAccountMock.mockReset().mockResolvedValue({ id: 42, platform: 'openai', type: 'apikey' })

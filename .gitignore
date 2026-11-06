@@ -124,6 +124,9 @@ CLAUDE.md
 scripts
 !backend/scripts/
 !backend/scripts/resolve-version.sh
+!backend/scripts/build-windows.ps1
+!backend/scripts/PLAYGROUND-WINDOWS.md
+backend/.build-deps/
 .code-review-state
 #openspec/
 code-reviews/
@@ -162,3 +165,7 @@ issues/
 .vite/
 # 本地闭源插件开发目录及构建产物不进入 Sub2API 仓库
 /plugins/
+
+# Persistent Playground browser profiles and installer archives
+backend/data/
+backend/runtime/camoufox/

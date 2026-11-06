@@ -61,13 +61,17 @@ type GeminiFunctionResponse struct {
 
 // GeminiGenerationConfig Gemini 生成配置
 type GeminiGenerationConfig struct {
-	MaxOutputTokens int                   `json:"maxOutputTokens,omitempty"`
-	Temperature     *float64              `json:"temperature,omitempty"`
-	TopP            *float64              `json:"topP,omitempty"`
-	TopK            *int                  `json:"topK,omitempty"`
-	ThinkingConfig  *GeminiThinkingConfig `json:"thinkingConfig,omitempty"`
-	StopSequences   []string              `json:"stopSequences,omitempty"`
-	ImageConfig     *GeminiImageConfig    `json:"imageConfig,omitempty"`
+	MaxOutputTokens    int                   `json:"maxOutputTokens,omitempty"`
+	Temperature        *float64              `json:"temperature,omitempty"`
+	TopP               *float64              `json:"topP,omitempty"`
+	TopK               *int                  `json:"topK,omitempty"`
+	ThinkingConfig     *GeminiThinkingConfig `json:"thinkingConfig,omitempty"`
+	StopSequences      []string              `json:"stopSequences,omitempty"`
+	ImageConfig        *GeminiImageConfig    `json:"imageConfig,omitempty"`
+	ResponseMimeType   string                `json:"responseMimeType,omitempty"`
+	ResponseSchema     map[string]any        `json:"responseSchema,omitempty"`
+	ResponseModalities []string              `json:"responseModalities,omitempty"`
+	Seed               *int64                `json:"seed,omitempty"`
 }
 
 // GeminiImageConfig Gemini 图片生成配置（gemini-3-pro-image / gemini-3.1-flash-image 等图片模型支持）
@@ -78,8 +82,9 @@ type GeminiImageConfig struct {
 
 // GeminiThinkingConfig Gemini thinking 配置
 type GeminiThinkingConfig struct {
-	IncludeThoughts bool `json:"includeThoughts"`
-	ThinkingBudget  int  `json:"thinkingBudget,omitempty"`
+	IncludeThoughts bool   `json:"includeThoughts"`
+	ThinkingBudget  int    `json:"thinkingBudget,omitempty"`
+	ThinkingLevel   string `json:"thinkingLevel,omitempty"`
 }
 
 // GeminiToolDeclaration Gemini 工具声明

@@ -61,12 +61,16 @@ ARG GOSUMDB
 # Populated by buildx from the --platform target (e.g. linux/amd64).
 ARG TARGETOS
 ARG TARGETARCH
+ARG SPIDERMONKEY_VER=v152.0.4-aistudio2api.1
 
 ENV GOPROXY=${GOPROXY}
 ENV GOSUMDB=${GOSUMDB}
 
-# Install build dependencies
-RUN apk add --no-cache git ca-certificates tzdata
+# Install build dependencies and prebuilt SpiderMonkey static libraries for WAA
+RUN apk add --no-cache git ca-certificates tzdata build-base g++ curl xz && \
+    mkdir -p /opt/spidermonkey && \
+    curl -fsSL https://github.com/Mag1cFall/firefox/releases/download/${SPIDERMONKEY_VER}/spidermonkey-${SPIDERMONKEY_VER}-linux-${TARGETARCH:-amd64}.tar.gz \
+    | tar -xz -C /opt/spidermonkey
 
 WORKDIR /app/backend
 
@@ -90,9 +94,12 @@ RUN --mount=type=cache,id=sub2api-gomod,target=/go/pkg/mod \
     VERSION_VALUE="${VERSION}" && \
     if [ -z "${VERSION_VALUE}" ]; then VERSION_VALUE="$(./scripts/resolve-version.sh)"; fi && \
     DATE_VALUE="${DATE:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}" && \
-    CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build \
+    CGO_ENABLED=1 \
+    CGO_CXXFLAGS="-I/opt/spidermonkey/include" \
+    CGO_LDFLAGS="-L/opt/spidermonkey/lib" \
+    GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build \
     -tags embed \
-    -ldflags="-s -w -X main.Version=${VERSION_VALUE} -X main.Commit=${COMMIT} -X main.Date=${DATE_VALUE} -X main.BuildType=release" \
+    -ldflags="-s -w -linkmode external -extldflags '-static -lstdc++ -lm -ldl -lpthread' -X main.Version=${VERSION_VALUE} -X main.Commit=${COMMIT} -X main.Date=${DATE_VALUE} -X main.BuildType=release" \
     -trimpath \
     -o /app/sub2api \
     ./cmd/server
@@ -105,7 +112,7 @@ FROM ${POSTGRES_IMAGE} AS pg-client
 # -----------------------------------------------------------------------------
 # Stage 4: Final Runtime Image
 # -----------------------------------------------------------------------------
-FROM ${ALPINE_IMAGE}
+FROM ${ALPINE_IMAGE} AS standard
 
 # Labels
 LABEL maintainer="Wei-Shaw <github.com/Wei-Shaw>"
@@ -144,6 +151,7 @@ COPY --from=backend-builder --chown=sub2api:sub2api /app/backend/resources /app/
 
 # Create data directory
 RUN mkdir -p /app/data && chown sub2api:sub2api /app/data
+ENV DATA_DIR=/app/data
 
 # Copy entrypoint script (fixes volume permissions then drops to sub2api)
 COPY deploy/docker-entrypoint.sh /app/docker-entrypoint.sh
@@ -159,3 +167,26 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
 # Run the application (entrypoint fixes /app/data ownership then execs as sub2api)
 ENTRYPOINT ["/app/docker-entrypoint.sh"]
 CMD ["/app/sub2api"]
+
+# Optional glibc browser runtime: docker build --target camoufox .
+FROM postgres:18-bookworm AS camoufox
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates tzdata libgtk-3-0 libasound2 libx11-xcb1 libdbus-glib-1-2 \
+    curl libnss3 libgbm1 libxcomposite1 libxdamage1 libxrandr2 libxtst6 fonts-liberation \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd -g 1000 sub2api && useradd -u 1000 -g sub2api -m sub2api \
+    && ln -s /usr/local/bin/gosu /usr/local/bin/su-exec
+WORKDIR /app
+COPY --from=backend-builder --chown=sub2api:sub2api /app/sub2api /app/sub2api
+COPY --from=backend-builder --chown=sub2api:sub2api /app/backend/resources /app/resources
+COPY deploy/docker-entrypoint.sh /app/docker-entrypoint.sh
+RUN chmod +x /app/docker-entrypoint.sh && mkdir -p /app/data && chown sub2api:sub2api /app/data
+ENV DATA_DIR=/app/data
+EXPOSE 8080
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+    CMD curl -fsS http://localhost:${SERVER_PORT:-8080}/health >/dev/null || exit 1
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
+CMD ["/app/sub2api"]
+
+# Preserve the default minimal image; select --target camoufox for Playground.
+FROM standard AS default

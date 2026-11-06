@@ -249,7 +249,10 @@
           />
           <p class="input-hint">{{ t('admin.accounts.leaveEmptyToKeep') }}</p>
         </div>
+      </div>
 
+      <!-- Model Restriction & Pool Mode Section -->
+      <div v-if="(account.type === 'apikey' || account.type === 'playground') && account.platform !== 'antigravity'" class="space-y-4">
         <!-- Model Restriction Section (不适用于 Antigravity) -->
         <div
           v-if="account.platform !== 'antigravity'"
@@ -363,7 +366,7 @@
               v-model="allowedModels"
               :model-mappings="modelMappings"
               :platform="account?.platform || 'anthropic'"
-              :account-id="account?.id"
+              :account-id="playgroundLoginToken ? undefined : account?.id"
               :show-sync-button="account.platform !== 'grok' || !account.id"
               @upstream-sync-finished="refreshGrokDiagnostics"
             />
@@ -1563,6 +1566,17 @@
           :placeholder="t('admin.accounts.antigravityProjectIdPlaceholder')"
         />
         <p class="input-hint">{{ t('admin.accounts.antigravityProjectIdHint') }}</p>
+      </div>
+
+      <!-- Gemini Playground (Camoufox) -->
+      <div v-if="account.platform === 'gemini' && account.type === 'playground'" class="space-y-4">
+        <PlaygroundAuthorization
+          :key="`${account.id}-${show}`"
+          editing
+          v-model:login-token="playgroundLoginToken"
+        :proxy-id="form.proxy_id"
+          :source="account.credentials?.playground_auth_source"
+        />
       </div>
 
       <!-- Antigravity model restriction (applies to all antigravity types) -->
@@ -3412,6 +3426,7 @@ import Icon from '@/components/icons/Icon.vue'
 import ProxySelector from '@/components/common/ProxySelector.vue'
 import ProxyAdBanner from '@/components/common/ProxyAdBanner.vue'
 import GroupSelector from '@/components/common/GroupSelector.vue'
+import PlaygroundAuthorization from '@/components/account/PlaygroundAuthorization.vue'
 import ModelWhitelistSelector from '@/components/account/ModelWhitelistSelector.vue'
 import GrokModelDiagnosticsPanel from '@/components/account/GrokModelDiagnosticsPanel.vue'
 import QuotaLimitCard from '@/components/account/QuotaLimitCard.vue'
@@ -3814,6 +3829,7 @@ const editVertexProjectId = ref('')
 const editVertexClientEmail = ref('')
 const editVertexLocation = ref('us-central1')
 const editVertexApiKey = ref('')
+const playgroundLoginToken = ref('')
 const isVertexAPIKeyMode = computed(() =>
   props.account?.platform === 'gemini' &&
   props.account?.type === 'service_account' &&
@@ -4615,6 +4631,7 @@ const syncFormFromAccount = (newAccount: Account | null) => {
   editVertexClientEmail.value = ''
   editVertexLocation.value = 'us-central1'
   editVertexApiKey.value = ''
+  playgroundLoginToken.value = ''
   antigravityProjectId.value =
     newAccount.platform === 'antigravity' &&
     newAccount.type === 'oauth' &&
@@ -4984,6 +5001,13 @@ const syncFormFromAccount = (newAccount: Account | null) => {
   } else if (newAccount.type === 'upstream' && newAccount.credentials) {
     const credentials = newAccount.credentials as Record<string, unknown>
     editBaseUrl.value = (credentials.base_url as string) || ''
+  } else if (newAccount.platform === 'gemini' && newAccount.type === 'playground' && newAccount.credentials) {
+    const credentials = newAccount.credentials as Record<string, unknown>
+    playgroundLoginToken.value = ''
+    loadModelRestrictionFromMapping(credentials.model_mapping as Record<string, unknown> | undefined)
+    poolModeEnabled.value = credentials.pool_mode === true
+    poolModeRetryCount.value = typeof credentials.pool_mode_retry_count === 'number' ? credentials.pool_mode_retry_count : DEFAULT_POOL_MODE_RETRY_COUNT
+    poolModeRetryStatusCodesInput.value = formatPoolModeRetryStatusCodes(credentials.pool_mode_retry_status_codes)
   } else if ((newAccount.platform === 'gemini' || newAccount.platform === 'anthropic') && newAccount.type === 'service_account' && newAccount.credentials) {
     const credentials = newAccount.credentials as Record<string, unknown>
     editVertexProjectId.value = (credentials.project_id as string) || ''
@@ -5887,6 +5911,31 @@ const handleSubmit = async () => {
         return
       }
 
+      updatePayload.credentials = newCredentials
+    } else if (props.account.platform === 'gemini' && props.account.type === 'playground') {
+      const currentCredentials = (props.account.credentials as Record<string, unknown>) || {}
+      const newCredentials: Record<string, unknown> = { ...currentCredentials }
+      if (playgroundLoginToken.value) { newCredentials.playground_login_token = playgroundLoginToken.value }
+      const modelMapping = buildModelRestrictionMapping()
+      if (modelMapping) {
+        newCredentials.model_mapping = modelMapping
+      } else {
+        delete newCredentials.model_mapping
+      }
+      if (poolModeEnabled.value) {
+        newCredentials.pool_mode = true
+        newCredentials.pool_mode_retry_count = normalizePoolModeRetryCount(poolModeRetryCount.value)
+        const parsedRetryStatusCodes = parsePoolModeRetryStatusCodes(poolModeRetryStatusCodesInput.value)
+        if (parsedRetryStatusCodes.length > 0) {
+          newCredentials.pool_mode_retry_status_codes = parsedRetryStatusCodes
+        } else {
+          delete newCredentials.pool_mode_retry_status_codes
+        }
+      } else {
+        delete newCredentials.pool_mode
+        delete newCredentials.pool_mode_retry_count
+        delete newCredentials.pool_mode_retry_status_codes
+      }
       updatePayload.credentials = newCredentials
     } else if (props.account.type === 'bedrock') {
       const currentCredentials = (props.account.credentials as Record<string, unknown>) || {}

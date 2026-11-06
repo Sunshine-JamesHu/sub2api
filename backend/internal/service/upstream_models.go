@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/aistudio"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/geminicli"
@@ -804,6 +805,11 @@ func (s *AccountTestService) fetchUpstreamModelListRequest(ctx context.Context, 
 
 	if account.Platform == PlatformAntigravity && account.Type != AccountTypeAPIKey {
 		models, body, err := s.fetchAntigravityOAuthUpstreamModels(ctx, account)
+		return models, body, nil, err
+	}
+
+	if account.Platform == PlatformGemini && account.Type == AccountTypePlayground {
+		models, body, err := s.fetchGeminiPlaygroundUpstreamModels(ctx, account)
 		return models, body, nil, err
 	}
 
@@ -1834,4 +1840,22 @@ func dedupeAndSortModelIDs(models []string) []string {
 	}
 	sort.Strings(result)
 	return result
+}
+
+func (s *AccountTestService) fetchGeminiPlaygroundUpstreamModels(ctx context.Context, account *Account) ([]string, []byte, error) {
+	if s.playgroundGatewayService == nil {
+		return nil, nil, newUpstreamModelSyncConfigError("Playground service is unavailable", nil)
+	}
+	models, body, err := s.playgroundGatewayService.Models(ctx, account)
+	if err != nil {
+		if errors.Is(err, aistudio.ErrAuthenticationRequired) {
+			return nil, nil, newUpstreamModelSyncConfigError("AI Studio session requires authentication; open Camoufox login in the account settings before syncing models", err)
+		}
+		var rpcErr *aistudio.RPCError
+		if errors.As(err, &rpcErr) && rpcErr.RegionNotSupported() {
+			return nil, nil, newUpstreamModelSyncConfigError("AI Studio does not support the current proxy region; switch this account's proxy to a supported region", err)
+		}
+		return nil, nil, newUpstreamModelSyncUpstreamError("Failed to sync Playground models", err)
+	}
+	return models, body, nil
 }

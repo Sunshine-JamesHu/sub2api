@@ -361,6 +361,11 @@ func registerAccountRoutes(admin *gin.RouterGroup, h *handler.Handlers, stepUpAu
 	accounts := admin.Group("/accounts")
 	{
 		accounts.GET("", h.Admin.Account.List)
+		accounts.POST("/playground/login", h.Admin.Account.StartPlaygroundLogin)
+		accounts.GET("/playground/login/:loginID/frame", h.Admin.Account.PlaygroundLoginFrame)
+		accounts.POST("/playground/login/:loginID/input", h.Admin.Account.PlaygroundLoginInput)
+		accounts.POST("/playground/login/:loginID/finish", h.Admin.Account.FinishPlaygroundLogin)
+		accounts.DELETE("/playground/login/:loginID", h.Admin.Account.CancelPlaygroundLogin)
 		accounts.GET("/upstream-billing-rates", h.Admin.Account.GetUpstreamBillingRates)
 		accounts.GET("/upstream-billing-probe/settings", h.Admin.Account.GetUpstreamBillingProbeSettings)
 		accounts.PUT("/upstream-billing-probe/settings", h.Admin.Account.UpdateUpstreamBillingProbeSettings)

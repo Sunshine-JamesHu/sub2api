@@ -1,0 +1,50 @@
+import { flushPromises, mount } from '@vue/test-utils'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import PlaygroundAuthorization from '../PlaygroundAuthorization.vue'
+const api = vi.hoisted(() => ({ startPlaygroundLogin: vi.fn(), playgroundLoginFrame: vi.fn(), playgroundLoginInput: vi.fn(), finishPlaygroundLogin: vi.fn(), cancelPlaygroundLogin: vi.fn() }))
+vi.mock('vue-i18n', () => ({ useI18n: () => ({ t: (key: string) => key }) }))
+vi.mock('@/api/admin/accounts', () => api)
+beforeEach(() => {
+  vi.useFakeTimers(); vi.clearAllMocks()
+  api.startPlaygroundLogin.mockResolvedValue({ id: 'login' })
+  api.playgroundLoginFrame.mockResolvedValue({ image: 'frame' })
+  api.finishPlaygroundLogin.mockResolvedValue({ token: 'verified', email: 'chosen@example.test' })
+  api.cancelPlaygroundLogin.mockResolvedValue(undefined)
+})
+afterEach(() => { vi.useRealTimers() })
+describe('Camoufox authorization', () => {
+  it('replaces all Cookie and Chrome import inputs', () => {
+    const wrapper = mount(PlaygroundAuthorization)
+    expect(wrapper.find('textarea').exists()).toBe(false)
+    expect(wrapper.text()).toContain('authNotConfigured')
+    expect(wrapper.text()).toContain('browserLogin')
+    wrapper.unmount()
+  })
+  it('captures a login grant, shows the verified email and stops the browser view', async () => {
+    const wrapper = mount(PlaygroundAuthorization, { props: { proxyId: 7 } })
+    await wrapper.get('button').trigger('click'); await flushPromises()
+    expect(api.startPlaygroundLogin).toHaveBeenCalledWith(7, expect.any(AbortSignal))
+    expect(wrapper.find('img').exists()).toBe(true)
+    await wrapper.findAll('button').find(button => button.text().includes('browserFinish'))!.trigger('click'); await flushPromises()
+    expect(wrapper.emitted('update:loginToken')).toContainEqual(['verified'])
+    expect(wrapper.text()).toContain('chosen@example.test')
+    expect(wrapper.find('img').exists()).toBe(false)
+    wrapper.unmount()
+  })
+  it('cancels an active browser when the form closes', async () => {
+    const wrapper = mount(PlaygroundAuthorization)
+    await wrapper.get('button').trigger('click'); await flushPromises()
+    wrapper.unmount(); await flushPromises()
+    expect(api.cancelPlaygroundLogin).toHaveBeenCalledWith('login')
+  })
+  it('keeps the login window open when Google verification is incomplete', async () => {
+    api.finishPlaygroundLogin.mockRejectedValue(new Error('Sign in first'))
+    const wrapper = mount(PlaygroundAuthorization)
+    await wrapper.get('button').trigger('click'); await flushPromises()
+    await wrapper.findAll('button').find(button => button.text().includes('browserFinish'))!.trigger('click'); await flushPromises()
+    expect(wrapper.get('[role="alert"]').text()).toBe('Sign in first')
+    expect(wrapper.find('img').exists()).toBe(true)
+    expect(wrapper.emitted('update:loginToken')?.some(([token]) => token === 'verified')).toBeFalsy()
+    wrapper.unmount()
+  })
+})

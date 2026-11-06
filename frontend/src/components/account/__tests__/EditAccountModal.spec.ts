@@ -75,6 +75,7 @@ const BaseDialogStub = defineComponent({
 const ModelWhitelistSelectorStub = defineComponent({
   name: 'ModelWhitelistSelector',
   props: {
+    accountId: Number,
     modelMappings: { type: Array, default: () => [] },
     modelValue: {
       type: Array,
@@ -336,6 +337,20 @@ describe('EditAccountModal', () => {
 
   afterEach(() => vi.useRealTimers())
 
+  it('waits for Camoufox reauthorization to be saved before model sync', async () => {
+    const account = { ...buildAccount(), platform: 'gemini', type: 'playground', credentials: {} }
+    const wrapper = mountModal(account)
+    const selector = wrapper.getComponent(ModelWhitelistSelectorStub)
+    const authorization = wrapper.getComponent({ name: 'PlaygroundAuthorization' })
+    expect(selector.props('accountId')).toBe(account.id)
+    authorization.vm.$emit('update:loginToken', 'verified-login-token')
+    await wrapper.vm.$nextTick()
+    expect(selector.props('accountId')).toBeUndefined()
+    authorization.vm.$emit('update:loginToken', '')
+    await wrapper.vm.$nextTick()
+    expect(selector.props('accountId')).toBe(account.id)
+    wrapper.unmount()
+  })
   it('passes existing non-identity mappings to the whitelist selector and preserves them on save', async () => {
     const account = buildAccount()
     account.credentials.model_mapping = { 'gpt-5.2': 'gpt-5.2', 'gpt-latest': 'deepseek-chat' }

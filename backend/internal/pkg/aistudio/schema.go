@@ -1,0 +1,905 @@
+package aistudio
+
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"math"
+	"slices"
+	"sort"
+	"strconv"
+	"strings"
+)
+
+// errSchemaForbidsAll 表示 Schema 不接受任何值
+var errSchemaForbidsAll = errors.New("禁止所有值")
+
+var schemaTypeCodes = map[string]int64{
+	"string":  1,
+	"number":  2,
+	"integer": 3,
+	"boolean": 4,
+	"array":   5,
+	"object":  6,
+}
+
+// schemaTypeNames 是 Gemini Schema 类型编号对应的枚举名
+var schemaTypeNames = []string{"TYPE_UNSPECIFIED", "STRING", "NUMBER", "INTEGER", "BOOLEAN", "ARRAY", "OBJECT"}
+
+// playgroundSchemaFields 是 Gemini Schema 字段在 Playground Schema 数组中的位置
+var playgroundSchemaFields = map[string]int{
+	"type": 0, "format": 1, "description": 2, "nullable": 3, "enum": 4, "items": 5, "properties": 6, "required": 7,
+	"minProperties": 8, "maxProperties": 9, "minimum": 10, "maximum": 11, "minLength": 12, "maxLength": 13, "pattern": 14,
+	"example": 15, "oneOf": 16, "anyOf": 17, "allOf": 18, "not": 19, "maxItems": 20, "minItems": 21, "propertyOrdering": 22,
+}
+
+// encodeJSONSchema 把 JSON Schema 编码为 Playground Schema 数组
+func encodeJSONSchema(raw json.RawMessage) ([]any, error) {
+	schema, err := geminiSchema(raw)
+	if err != nil {
+		return nil, err
+	}
+	return playgroundSchema(schema), nil
+}
+
+// playgroundSchema 把 Gemini Schema 对象编码为 Playground Schema 数组，属性按名称排序
+func playgroundSchema(schema map[string]any) []any {
+	var wire []any
+	for name, value := range schema {
+		switch name {
+		case "type":
+			value = int64(slices.Index(schemaTypeNames, value.(string)))
+		case "items", "not":
+			value = playgroundSchema(value.(map[string]any))
+		case "properties":
+			properties := value.(map[string]any)
+			names := make([]string, 0, len(properties))
+			for name := range properties {
+				names = append(names, name)
+			}
+			sort.Strings(names)
+			entries := make([]any, 0, len(names))
+			for _, name := range names {
+				entries = append(entries, []any{name, playgroundSchema(properties[name].(map[string]any))})
+			}
+			value = entries
+		case "example":
+			value = encodeWireValue(value)
+		case "oneOf", "anyOf", "allOf":
+			variants := make([]any, 0, len(value.([]any)))
+			for _, variant := range value.([]any) {
+				variants = append(variants, playgroundSchema(variant.(map[string]any)))
+			}
+			value = variants
+		}
+		wire = setWireField(wire, playgroundSchemaFields[name], value)
+	}
+	return wire
+}
+
+// geminiSchema 把 JSON Schema 规范化为 Gemini API Schema 对象
+func geminiSchema(raw json.RawMessage) (map[string]any, error) {
+	var err error
+	raw, err = cleanSchemaInput(raw, false)
+	if err != nil {
+		return nil, err
+	}
+	if bytes.Equal(raw, []byte("true")) {
+		return openSchema(), nil
+	}
+	if bytes.Equal(raw, []byte("false")) {
+		return nil, fmt.Errorf("schema false %w", errSchemaForbidsAll)
+	}
+	var schema map[string]json.RawMessage
+	_ = json.Unmarshal(raw, &schema)
+	if err := normalizeConstAndMetadata(schema); err != nil {
+		return nil, err
+	}
+	if err := normalizeNullableVariants(schema); err != nil {
+		return nil, err
+	}
+	if err := normalizeNotSchema(schema); err != nil {
+		return nil, err
+	}
+	if raw, ok := schema["items"]; ok && bytes.Equal(bytes.TrimSpace(raw), []byte("false")) {
+		if schema["prefixItems"] != nil {
+			return nil, &UnverifiedProtocolError{Feature: "prefixItems 与 items=false 的位置约束"}
+		}
+		if minimum, ok := schema["minItems"]; ok {
+			value, err := schemaInteger(minimum, "minItems")
+			if err != nil || value > 0 {
+				return nil, fmt.Errorf("schema.items=false 与 minItems 不兼容")
+			}
+		}
+		schema["items"], schema["maxItems"] = json.RawMessage("true"), json.RawMessage("0")
+	}
+	normalizeImplicitType(schema)
+	allowed := map[string]bool{
+		"type": true, "format": true, "description": true, "nullable": true,
+		"enum": true, "items": true, "properties": true, "required": true,
+		"minItems": true, "maxItems": true, "minProperties": true, "maxProperties": true,
+		"minimum": true, "maximum": true, "minLength": true, "maxLength": true,
+		"pattern": true, "example": true, "oneOf": true, "anyOf": true,
+		"allOf": true, "not": true, "propertyOrdering": true,
+		"$schema": true, "additionalProperties": true, "default": true, "exclusiveMinimum": true,
+		"propertyNames": true, "prefixItems": true,
+	}
+	for name := range schema {
+		if !allowed[name] {
+			return nil, &UnverifiedProtocolError{Feature: "JSON schema 字段 " + name}
+		}
+	}
+	typeName, err := schemaType(schema)
+	if err != nil {
+		return nil, err
+	}
+	typeName = strings.ToLower(typeName)
+	typeCode, ok := schemaTypeCodes[typeName]
+	if !ok && typeName != "" {
+		return nil, fmt.Errorf("未知 schema.type %q", typeName)
+	}
+	encoded := map[string]any{"type": schemaTypeNames[typeCode]}
+	if value, ok := schema["format"]; ok {
+		format, err := schemaString(value, "format")
+		if err != nil {
+			return nil, err
+		}
+		encoded["format"] = format
+	}
+	if value, ok := schema["description"]; ok {
+		description, err := schemaString(value, "description")
+		if err != nil {
+			return nil, err
+		}
+		encoded["description"] = description
+	}
+	if value, ok := schema["nullable"]; ok {
+		var nullable bool
+		if err := json.Unmarshal(value, &nullable); err != nil {
+			return nil, fmt.Errorf("schema.nullable 必须是布尔值")
+		}
+		encoded["nullable"] = nullable
+	}
+	if value, ok := schema["enum"]; ok {
+		values, err := schemaStrings(value, "enum")
+		if err != nil {
+			return nil, err
+		}
+		if values = slices.DeleteFunc(values, func(value string) bool { return value == "" }); len(values) > 0 {
+			encoded["enum"] = values
+		}
+	}
+	if value, ok := schema["items"]; ok {
+		items, err := geminiSchema(value)
+		if err != nil {
+			return nil, fmt.Errorf("schema.items: %w", err)
+		}
+		encoded["items"] = items
+	}
+	for _, name := range []string{"minItems", "maxItems", "minProperties", "maxProperties", "minLength", "maxLength"} {
+		if value, ok := schema[name]; ok {
+			integer, err := schemaInteger(value, name)
+			if err != nil {
+				return nil, err
+			}
+			encoded[name] = integer
+		}
+	}
+	if value, ok := schema["properties"]; ok {
+		var properties map[string]json.RawMessage
+		_ = json.Unmarshal(value, &properties)
+		names := make([]string, 0, len(properties))
+		for name := range properties {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		var required []string
+		_ = json.Unmarshal(schema["required"], &required)
+		encodedProperties := make(map[string]any, len(names))
+		for _, name := range names {
+			// 可选属性为 false 表示该属性不出现
+			if bytes.Equal(bytes.TrimSpace(properties[name]), []byte("false")) && !slices.Contains(required, name) {
+				continue
+			}
+			property, err := geminiSchema(properties[name])
+			if err != nil {
+				return nil, fmt.Errorf("schema.properties.%s: %w", name, err)
+			}
+			encodedProperties[name] = property
+		}
+		if len(encodedProperties) > 0 {
+			encoded["properties"] = encodedProperties
+		}
+	}
+	if value, ok := schema["required"]; ok {
+		required, err := schemaStrings(value, "required")
+		if err != nil {
+			return nil, err
+		}
+		encoded["required"] = required
+	}
+	for _, name := range []string{"minimum", "maximum"} {
+		if value, ok := schema[name]; ok {
+			number, err := schemaNumber(value, name)
+			if err != nil {
+				return nil, err
+			}
+			encoded[name] = number
+		}
+	}
+	if value, ok := schema["pattern"]; ok {
+		pattern, err := schemaString(value, "pattern")
+		if err != nil {
+			return nil, err
+		}
+		encoded["pattern"] = pattern
+	}
+	if value, ok := schema["example"]; ok {
+		var example any
+		_ = json.Unmarshal(value, &example)
+		encoded["example"] = example
+	}
+	for _, name := range []string{"oneOf", "anyOf", "allOf"} {
+		if value, ok := schema[name]; ok {
+			variants, err := encodeSchemaVariants(value, name)
+			if err != nil {
+				return nil, err
+			}
+			if len(variants) > 0 {
+				encoded[name] = variants
+			}
+		}
+	}
+	if value, ok := schema["not"]; ok {
+		notSchema, err := geminiSchema(value)
+		if err != nil {
+			return nil, fmt.Errorf("schema.not: %w", err)
+		}
+		encoded["not"] = notSchema
+	}
+	if value, ok := schema["propertyOrdering"]; ok {
+		ordering, err := schemaStrings(value, "propertyOrdering")
+		if err != nil {
+			return nil, err
+		}
+		encoded["propertyOrdering"] = ordering
+	}
+	if encoded["type"] == schemaTypeNames[0] && encoded["anyOf"] == nil && encoded["oneOf"] == nil && encoded["allOf"] == nil {
+		for name, value := range openSchema() {
+			if _, ok := encoded[name]; !ok {
+				encoded[name] = value
+			}
+		}
+	}
+	return encoded, nil
+}
+
+// openSchema 返回不限类型节点的 Gemini Schema：标量与标量数组的 anyOf，允许 null
+func openSchema() map[string]any {
+	scalars := func() []any {
+		return []any{map[string]any{"type": "STRING"}, map[string]any{"type": "NUMBER"}, map[string]any{"type": "BOOLEAN"}}
+	}
+	items := map[string]any{"type": schemaTypeNames[0], "nullable": true, "anyOf": scalars()}
+	return map[string]any{"type": schemaTypeNames[0], "nullable": true, "anyOf": append(scalars(), map[string]any{"type": "ARRAY", "items": items})}
+}
+
+// normalizeNullableVariants 将 JSON Schema null 联合映射为 AI Studio nullable
+func normalizeNullableVariants(schema map[string]json.RawMessage) error {
+	if raw, ok := schema["type"]; ok {
+		var typeName string
+		if err := json.Unmarshal(raw, &typeName); err != nil {
+			var typeNames []string
+			if arrayErr := json.Unmarshal(raw, &typeNames); arrayErr != nil || len(typeNames) == 0 {
+				return fmt.Errorf("schema.type 必须是字符串或字符串数组")
+			}
+			nonNull := make([]string, 0, len(typeNames))
+			nullable := false
+			for _, name := range typeNames {
+				if strings.EqualFold(name, "null") {
+					nullable = true
+					continue
+				}
+				nonNull = append(nonNull, name)
+			}
+			if len(nonNull) == 0 {
+				return fmt.Errorf("schema.type 必须包含非 null 类型")
+			}
+			schema["type"], _ = json.Marshal(nonNull[0])
+			if len(nonNull) > 1 {
+				delete(schema, "type")
+				variants := make([]map[string]string, 0, len(nonNull))
+				for _, name := range nonNull {
+					variants = append(variants, map[string]string{"type": name})
+				}
+				schema["anyOf"], _ = json.Marshal(variants)
+			}
+			if nullable {
+				schema["nullable"] = json.RawMessage("true")
+			}
+		}
+	}
+	for _, name := range []string{"anyOf", "oneOf"} {
+		raw, ok := schema[name]
+		if !ok {
+			continue
+		}
+		var variants []json.RawMessage
+		_ = json.Unmarshal(raw, &variants)
+		filtered := variants[:0]
+		nullable := false
+		for _, variant := range variants {
+			if bytes.Equal(bytes.TrimSpace(variant), []byte("true")) || bytes.Equal(bytes.TrimSpace(variant), []byte("false")) {
+				filtered = append(filtered, variant)
+				continue
+			}
+			var value map[string]json.RawMessage
+			_ = json.Unmarshal(variant, &value)
+			typeValue, exists := value["type"]
+			if exists {
+				typeName, err := schemaString(typeValue, "type")
+				if err != nil {
+					return err
+				}
+				if strings.EqualFold(typeName, "null") {
+					nullable = true
+					continue
+				}
+			}
+			filtered = append(filtered, variant)
+		}
+		if !nullable {
+			continue
+		}
+		if len(filtered) == 0 {
+			return fmt.Errorf("schema.%s 必须包含非 null 类型", name)
+		}
+		schema[name], _ = json.Marshal(filtered)
+		schema["nullable"] = json.RawMessage("true")
+	}
+	return nil
+}
+
+// normalizeConstAndMetadata 将字符串常量和说明字段转换为可发送结构
+func normalizeConstAndMetadata(schema map[string]json.RawMessage) error {
+	delete(schema, "title")
+	delete(schema, "$id")
+	delete(schema, "$comment")
+	if raw, ok := schema["const"]; ok {
+		var decoded any
+		_ = json.Unmarshal(raw, &decoded)
+		value, ok := decoded.(string)
+		if !ok {
+			return fmt.Errorf("schema.const 只支持字符串")
+		}
+		if rawType, exists := schema["type"]; exists {
+			typeName, err := schemaString(rawType, "type")
+			if err != nil || !strings.EqualFold(typeName, "string") {
+				return fmt.Errorf("schema.const 只支持 string 类型")
+			}
+		} else {
+			schema["type"] = json.RawMessage(`"string"`)
+		}
+		schema["enum"], _ = json.Marshal([]string{value})
+		delete(schema, "const")
+	}
+	for _, name := range []string{"anyOf", "oneOf", "allOf"} {
+		raw, ok := schema[name]
+		if !ok {
+			continue
+		}
+		var variants []json.RawMessage
+		_ = json.Unmarshal(raw, &variants)
+		for index, variant := range variants {
+			if bytes.Equal(bytes.TrimSpace(variant), []byte("true")) || bytes.Equal(bytes.TrimSpace(variant), []byte("false")) {
+				continue
+			}
+			var subSchema map[string]json.RawMessage
+			_ = json.Unmarshal(variant, &subSchema)
+			if err := normalizeConstAndMetadata(subSchema); err != nil {
+				return fmt.Errorf("schema.%s[%d]: %w", name, index, err)
+			}
+			variants[index], _ = json.Marshal(subSchema)
+		}
+		schema[name], _ = json.Marshal(variants)
+	}
+	return nil
+}
+
+// cleanSchemaInput 清理可选空值并按工具与输出约束保留组合节点
+func cleanSchemaInput(raw json.RawMessage, preserveCombinations bool) (json.RawMessage, error) {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
+		return json.RawMessage(`{"type":"object"}`), nil
+	}
+	if bytes.Equal(raw, []byte("true")) || bytes.Equal(raw, []byte("false")) {
+		return raw, nil
+	}
+	var schema map[string]json.RawMessage
+	if json.Unmarshal(raw, &schema) != nil || schema == nil {
+		return nil, fmt.Errorf("schema 必须是 JSON object 或 boolean")
+	}
+	for _, name := range []string{"type", "format", "description", "nullable", "enum", "items", "properties", "required", "minItems", "maxItems", "minProperties", "maxProperties", "minimum", "maximum", "minLength", "maxLength", "pattern", "oneOf", "anyOf", "allOf", "not", "propertyOrdering"} {
+		if bytes.Equal(bytes.TrimSpace(schema[name]), []byte("null")) {
+			delete(schema, name)
+		}
+	}
+	var typeName string
+	if json.Unmarshal(schema["type"], &typeName) == nil && strings.EqualFold(typeName, "TYPE_UNSPECIFIED") {
+		delete(schema, "type")
+	}
+	for _, name := range []string{"minItems", "maxItems", "minProperties", "maxProperties", "minLength", "maxLength"} {
+		if value, ok := schema[name]; ok {
+			schema[name] = canonicalSchemaInteger(value)
+		}
+	}
+	for _, name := range []string{"items", "not"} {
+		if nested := bytes.TrimSpace(schema[name]); len(nested) > 0 && nested[0] == '{' {
+			cleaned, err := cleanSchemaInput(nested, preserveCombinations)
+			if err != nil {
+				return nil, fmt.Errorf("schema.%s: %w", name, err)
+			}
+			schema[name] = cleaned
+		}
+	}
+	if value, ok := schema["properties"]; ok {
+		var properties map[string]json.RawMessage
+		if json.Unmarshal(value, &properties) != nil || properties == nil {
+			return nil, fmt.Errorf("schema.properties 必须是 JSON object")
+		}
+		for name, property := range properties {
+			if bytes.Equal(bytes.TrimSpace(property), []byte("null")) {
+				property = json.RawMessage("true")
+			}
+			cleaned, err := cleanSchemaInput(property, preserveCombinations)
+			if err != nil {
+				return nil, fmt.Errorf("schema.properties.%s: %w", name, err)
+			}
+			properties[name] = cleaned
+		}
+		schema["properties"], _ = json.Marshal(properties)
+	}
+	for _, name := range []string{"anyOf", "oneOf", "allOf", "prefixItems"} {
+		if raw, ok := schema[name]; ok {
+			var variants []json.RawMessage
+			if json.Unmarshal(raw, &variants) != nil {
+				return nil, fmt.Errorf("schema.%s 必须是 Schema 数组", name)
+			}
+			filtered := make([]json.RawMessage, 0, len(variants))
+			unrestricted := false
+			for index, variant := range variants {
+				cleaned, err := cleanSchemaInput(variant, preserveCombinations)
+				if err != nil {
+					return nil, fmt.Errorf("schema.%s[%d]: %w", name, index, err)
+				}
+				if preserveCombinations {
+					filtered = append(filtered, cleaned)
+					continue
+				}
+				if name == "anyOf" && bytes.Equal(cleaned, []byte("true")) {
+					unrestricted = true
+					break
+				}
+				if name == "allOf" && bytes.Equal(cleaned, []byte("false")) {
+					return nil, fmt.Errorf("schema.allOf %w", errSchemaForbidsAll)
+				}
+				if (name == "anyOf" || name == "oneOf") && bytes.Equal(cleaned, []byte("false")) || name == "allOf" && bytes.Equal(cleaned, []byte("true")) {
+					continue
+				}
+				filtered = append(filtered, cleaned)
+			}
+			if unrestricted || name == "allOf" && len(filtered) == 0 {
+				delete(schema, name)
+			} else if len(filtered) == 0 && (name == "anyOf" || name == "oneOf") {
+				return nil, fmt.Errorf("schema.%s %w", name, errSchemaForbidsAll)
+			} else {
+				schema[name], _ = json.Marshal(filtered)
+			}
+		}
+	}
+	return json.Marshal(schema)
+}
+
+// normalizeNotSchema 保留排除值并处理不接受任何值的约束
+func normalizeNotSchema(schema map[string]json.RawMessage) error {
+	raw, ok := schema["not"]
+	if !ok {
+		return nil
+	}
+	raw = bytes.TrimSpace(raw)
+	if bytes.Equal(raw, []byte("false")) {
+		delete(schema, "not")
+		return nil
+	}
+	if bytes.Equal(raw, []byte("true")) || bytes.Equal(raw, []byte("{}")) {
+		return fmt.Errorf("schema.not %w", errSchemaForbidsAll)
+	}
+	var sub map[string]json.RawMessage
+	if json.Unmarshal(raw, &sub) == nil && sub != nil {
+		var typeName string
+		if len(sub) == 1 && json.Unmarshal(sub["type"], &typeName) == nil && strings.EqualFold(typeName, "null") {
+			delete(schema, "not")
+			schema["nullable"] = json.RawMessage("false")
+		}
+		var values []string
+		if json.Unmarshal(sub["enum"], &values) == nil && slices.Contains(values, "") {
+			subType, _ := schemaType(sub)
+			pure := len(sub) == 1 || len(sub) == 2 && strings.EqualFold(subType, "string")
+			if values = excludeEmptyString(schema, values, pure); len(values) == 0 {
+				delete(schema, "not")
+				return nil
+			}
+			sub["enum"], _ = json.Marshal(values)
+			schema["not"], _ = json.Marshal(sub)
+		}
+		return nil
+	}
+	var values []string
+	if json.Unmarshal(raw, &values) != nil {
+		var value string
+		if json.Unmarshal(raw, &value) != nil {
+			return fmt.Errorf("schema.not 必须是 Schema 或字符串排除值")
+		}
+		values = []string{value}
+	}
+	if values = excludeEmptyString(schema, values, true); len(values) == 0 {
+		delete(schema, "not")
+		return nil
+	}
+	schema["not"], _ = json.Marshal(map[string]any{"type": "string", "enum": values})
+	return nil
+}
+
+// excludeEmptyString 去掉排除值中上游拒绝的空串，pure 表示 not 只是纯枚举排除，此时字符串节点改写为 minLength 1；返回其余排除值
+func excludeEmptyString(schema map[string]json.RawMessage, values []string, pure bool) []string {
+	if !slices.Contains(values, "") {
+		return values
+	}
+	typeName, _ := schemaType(schema)
+	var minLength int
+	if pure && strings.EqualFold(typeName, "string") && (json.Unmarshal(schema["minLength"], &minLength) != nil || minLength < 1) {
+		schema["minLength"] = json.RawMessage("1")
+	}
+	return slices.DeleteFunc(values, func(value string) bool { return value == "" })
+}
+
+// normalizeImplicitType 从节点约束推导类型并保留开放的数组元素
+func normalizeImplicitType(schema map[string]json.RawMessage) {
+	if _, ok := schema["type"]; !ok {
+		var typed map[string]json.RawMessage
+		conflictingType, conflictingItems := false, false
+		for _, name := range []string{"anyOf", "oneOf", "allOf"} {
+			var variants []map[string]json.RawMessage
+			if raw, ok := schema[name]; ok && json.Unmarshal(raw, &variants) == nil {
+				for _, variant := range variants {
+					if value, ok := variant["type"]; ok {
+						if typed == nil {
+							typed = variant
+						} else {
+							conflictingType = conflictingType || !bytes.Equal(bytes.TrimSpace(value), bytes.TrimSpace(typed["type"]))
+							conflictingItems = conflictingItems || !bytes.Equal(bytes.TrimSpace(variant["items"]), bytes.TrimSpace(typed["items"]))
+						}
+					}
+				}
+			}
+		}
+		switch {
+		case schema["properties"] != nil:
+			schema["type"] = json.RawMessage(`"object"`)
+		case schema["items"] != nil || schema["prefixItems"] != nil:
+			schema["type"] = json.RawMessage(`"array"`)
+		default:
+			if schema["enum"] != nil || schema["pattern"] != nil || schema["format"] != nil || schema["minLength"] != nil || schema["maxLength"] != nil {
+				schema["type"] = json.RawMessage(`"string"`)
+			}
+		}
+		if typed != nil && !conflictingType {
+			schema["type"] = typed["type"]
+			if items, ok := typed["items"]; ok && schema["items"] == nil && !conflictingItems {
+				schema["items"] = items
+			}
+		}
+	}
+	var typeName string
+	if json.Unmarshal(schema["type"], &typeName) != nil || !strings.EqualFold(typeName, "array") || schema["items"] != nil {
+		return
+	}
+	schema["items"] = json.RawMessage(`true`)
+	var prefix []map[string]json.RawMessage
+	if raw, ok := schema["prefixItems"]; ok && json.Unmarshal(raw, &prefix) == nil {
+		typed := make([]map[string]json.RawMessage, 0, len(prefix))
+		for _, item := range prefix {
+			if _, ok := item["type"]; ok {
+				typed = append(typed, item)
+			}
+		}
+		if len(typed) > 0 {
+			schema["items"], _ = json.Marshal(map[string]any{"anyOf": typed})
+		}
+	}
+}
+
+func schemaType(schema map[string]json.RawMessage) (string, error) {
+	if value, ok := schema["type"]; ok {
+		typeName, err := schemaString(value, "type")
+		if err != nil || typeName == "" {
+			return "", fmt.Errorf("schema.type 必须是字符串")
+		}
+		return typeName, nil
+	}
+	return "", nil
+}
+
+// canonicalSchemaInteger 把 Gemini Schema 的字符串 int64 与零小数数字改写为整数字面量，其他值保持原样
+func canonicalSchemaInteger(raw json.RawMessage) json.RawMessage {
+	value := string(bytes.TrimSpace(raw))
+	var text string
+	if json.Unmarshal(raw, &text) == nil {
+		value = text
+	}
+	if integer, err := strconv.ParseInt(value, 10, 64); err == nil {
+		return json.RawMessage(strconv.FormatInt(integer, 10))
+	}
+	number, err := strconv.ParseFloat(value, 64)
+	if err != nil || number != math.Trunc(number) || math.Abs(number) > 1<<53 {
+		return raw
+	}
+	return json.RawMessage(strconv.FormatInt(int64(number), 10))
+}
+
+func schemaInteger(raw json.RawMessage, name string) (int64, error) {
+	value, err := strconv.ParseInt(string(raw), 10, 64)
+	if err != nil || value < 0 {
+		return 0, fmt.Errorf("schema.%s 必须是非负整数", name)
+	}
+	return value, nil
+}
+
+func schemaNumber(raw json.RawMessage, name string) (float64, error) {
+	value, err := strconv.ParseFloat(string(raw), 64)
+	if err != nil {
+		return 0, fmt.Errorf("schema.%s 必须是数字", name)
+	}
+	return value, nil
+}
+
+func encodeSchemaVariants(raw json.RawMessage, name string) ([]any, error) {
+	var variants []json.RawMessage
+	_ = json.Unmarshal(raw, &variants)
+	encoded := make([]any, 0, len(variants))
+	for index, variant := range variants {
+		schema, err := geminiSchema(variant)
+		if err != nil {
+			return nil, fmt.Errorf("schema.%s[%d]: %w", name, index, err)
+		}
+		encoded = append(encoded, schema)
+	}
+	return encoded, nil
+}
+
+func schemaString(raw json.RawMessage, name string) (string, error) {
+	var value string
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return "", fmt.Errorf("schema.%s 必须是字符串", name)
+	}
+	return value, nil
+}
+
+func schemaStrings(raw json.RawMessage, name string) ([]string, error) {
+	var values []string
+	if err := json.Unmarshal(raw, &values); err != nil {
+		return nil, fmt.Errorf("schema.%s 必须是字符串数组", name)
+	}
+	return values, nil
+}
+
+func setWireField(wire []any, index int, value any) []any {
+	for len(wire) <= index {
+		wire = append(wire, nil)
+	}
+	wire[index] = value
+	return wire
+}
+
+// normalizeFunctionParameters 将零参数定义归一化为对象，并为 required 中未定义的属性补充不限类型的定义
+func normalizeFunctionParameters(raw json.RawMessage) (json.RawMessage, error) {
+	cleaned, err := cleanSchemaInput(raw, true)
+	if err != nil {
+		return nil, err
+	}
+	if bytes.Equal(cleaned, []byte("{}")) || bytes.Equal(cleaned, []byte("true")) {
+		return json.RawMessage(`{"type":"object"}`), nil
+	}
+	schema := decodeSchemaValue(cleaned)
+	if !defineRequiredProperties(schema) {
+		return cleaned, nil
+	}
+	return json.Marshal(schema)
+}
+
+// decodeSchemaValue 解码 Schema 并保留数值原文
+func decodeSchemaValue(raw json.RawMessage) any {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var value any
+	_ = decoder.Decode(&value)
+	return value
+}
+
+// defineRequiredProperties 为 required 列出而 properties 未定义的属性补充不限类型的定义，返回是否修改
+func defineRequiredProperties(value any) bool {
+	schema, ok := value.(map[string]any)
+	if !ok {
+		return false
+	}
+	changed := false
+	if required, ok := schema["required"].([]any); ok {
+		properties, _ := schema["properties"].(map[string]any)
+		for _, item := range required {
+			name, ok := item.(string)
+			if !ok {
+				continue
+			}
+			if _, defined := properties[name]; defined {
+				continue
+			}
+			if properties == nil {
+				properties = map[string]any{}
+				schema["properties"] = properties
+			}
+			properties[name] = map[string]any{}
+			changed = true
+		}
+	}
+	for key, child := range schema {
+		switch key {
+		case "properties", "$defs", "definitions":
+			if children, ok := child.(map[string]any); ok {
+				for _, nested := range children {
+					changed = defineRequiredProperties(nested) || changed
+				}
+			}
+		case "items", "additionalProperties", "not":
+			changed = defineRequiredProperties(child) || changed
+		case "anyOf", "oneOf", "allOf", "prefixItems":
+			if children, ok := child.([]any); ok {
+				for _, nested := range children {
+					changed = defineRequiredProperties(nested) || changed
+				}
+			}
+		}
+	}
+	return changed
+}
+
+// maxSchemaRefExpansions 为一个 Schema 中展开本地 $ref 的总次数上限
+const maxSchemaRefExpansions = 500
+
+// inlineSchemaRefs 把指向根 $defs 或 definitions 的本地 $ref 替换为被引用的定义，循环引用与超过 maxSchemaRefExpansions 之后的引用保留原节点
+func inlineSchemaRefs(raw json.RawMessage) json.RawMessage {
+	root, ok := decodeSchemaValue(raw).(map[string]any)
+	if !ok {
+		return raw
+	}
+	definitions := map[string]any{}
+	for _, key := range []string{"$defs", "definitions"} {
+		if entries, ok := root[key].(map[string]any); ok {
+			for name, definition := range entries {
+				definitions["#/"+key+"/"+name] = definition
+			}
+		}
+	}
+	if len(definitions) == 0 {
+		return raw
+	}
+	budget := maxSchemaRefExpansions
+	resolved := resolveSchemaRefs(root, definitions, nil, &budget).(map[string]any)
+	delete(resolved, "$defs")
+	delete(resolved, "definitions")
+	encoded, _ := json.Marshal(resolved)
+	return encoded
+}
+
+// resolveSchemaRefs 递归替换本地 $ref，节点自身的其他字段优先于被引用定义的同名字段，budget 为剩余的展开次数
+func resolveSchemaRefs(value any, definitions map[string]any, active []string, budget *int) any {
+	switch node := value.(type) {
+	case map[string]any:
+		if ref, ok := node["$ref"].(string); ok {
+			if definition, ok := definitions[ref]; ok && !slices.Contains(active, ref) && *budget > 0 {
+				*budget--
+				merged := map[string]any{}
+				if target, ok := resolveSchemaRefs(definition, definitions, append(slices.Clip(active), ref), budget).(map[string]any); ok {
+					for key, item := range target {
+						merged[key] = item
+					}
+				}
+				for key, item := range node {
+					if key != "$ref" {
+						merged[key] = resolveSchemaRefs(item, definitions, active, budget)
+					}
+				}
+				return merged
+			}
+		}
+		result := make(map[string]any, len(node))
+		for key, item := range node {
+			result[key] = resolveSchemaRefs(item, definitions, active, budget)
+		}
+		return result
+	case []any:
+		result := make([]any, len(node))
+		for index, item := range node {
+			result[index] = resolveSchemaRefs(item, definitions, active, budget)
+		}
+		return result
+	}
+	return value
+}
+
+// responseSchemaNote 为附加在结构化输出根说明或系统指令中的完整 Schema 前缀
+const responseSchemaNote = "The response must follow this JSON Schema: "
+
+// schemaHasEmptyEnum 判断 Schema 的 enum 含上游拒绝的空串，编码时去掉空串并在说明附完整 Schema
+func schemaHasEmptyEnum(raw json.RawMessage) bool {
+	return slices.ContainsFunc(schemaEnums(decodeSchemaValue(raw)), func(values []any) bool { return slices.Contains(values, any("")) })
+}
+
+// schemaEnums 返回 Schema 各层节点的 enum 取值
+func schemaEnums(value any) [][]any {
+	var enums [][]any
+	switch node := value.(type) {
+	case map[string]any:
+		if values, ok := node["enum"].([]any); ok {
+			enums = append(enums, values)
+		}
+		for _, item := range node {
+			enums = append(enums, schemaEnums(item)...)
+		}
+	case []any:
+		for _, item := range node {
+			enums = append(enums, schemaEnums(item)...)
+		}
+	}
+	return enums
+}
+
+// describedSchema 返回附加完整 JSON Schema 后的说明，已附加时原样返回
+func describedSchema(description string, raw json.RawMessage) string {
+	if strings.Contains(description, responseSchemaNote) {
+		return description
+	}
+	var compact bytes.Buffer
+	_ = json.Compact(&compact, raw)
+	return strings.TrimSpace(description + "\n" + responseSchemaNote + compact.String())
+}
+
+func projectToolSchema(wire []any) {
+	for _, index := range []int{5, 19} {
+		if len(wire) > index && wire[index] != nil {
+			projectToolSchema(wire[index].([]any))
+		}
+	}
+	if len(wire) > 6 && wire[6] != nil {
+		for _, property := range wire[6].([]any) {
+			projectToolSchema(property.([]any)[1].([]any))
+		}
+	}
+	for _, index := range []int{16, 17, 18} {
+		if len(wire) <= index || wire[index] == nil {
+			continue
+		}
+		for _, variant := range wire[index].([]any) {
+			projectToolSchema(variant.([]any))
+		}
+		if wire[0] == int64(0) {
+			first := wire[index].([]any)[0].([]any)
+			wire[0] = first[0]
+			if first[0] == int64(5) && len(first) > 5 {
+				setWireField(wire, 5, first[5])
+			}
+		}
+	}
+	if wire[0] == int64(0) {
+		wire[0] = int64(1)
+	}
+}

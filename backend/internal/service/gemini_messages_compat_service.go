@@ -65,6 +65,7 @@ type GeminiMessagesCompatService struct {
 	rateLimitService          *RateLimitService
 	httpUpstream              HTTPUpstream
 	antigravityGatewayService *AntigravityGatewayService
+	playgroundGatewayService  *PlaygroundGatewayService
 	cfg                       *config.Config
 	responseHeaderFilter      *responseheaders.CompiledHeaderFilter
 }
@@ -101,9 +102,14 @@ func NewGeminiMessagesCompatService(
 		rateLimitService:          rateLimitService,
 		httpUpstream:              httpUpstream,
 		antigravityGatewayService: antigravityGatewayService,
+		playgroundGatewayService:  NewPlaygroundGatewayService(accountRepo, rateLimitService, cfg),
 		cfg:                       cfg,
 		responseHeaderFilter:      compileResponseHeaderFilter(cfg),
 	}
+}
+
+func (s *GeminiMessagesCompatService) GetPlaygroundGatewayService() *PlaygroundGatewayService {
+	return s.playgroundGatewayService
 }
 
 // GetTokenProvider returns the token provider for OAuth accounts
@@ -572,7 +578,7 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 	var requestIDHeader string
 	var buildReq func(ctx context.Context) (*http.Request, string, error)
 	useUpstreamStream := req.Stream
-	if account.Type == AccountTypeOAuth && !req.Stream && strings.TrimSpace(account.GetCredential("project_id")) != "" {
+	if (account.Type == AccountTypeOAuth && !req.Stream && strings.TrimSpace(account.GetCredential("project_id")) != "") || account.Type == AccountTypePlayground {
 		// Code Assist's non-streaming generateContent may return no content; use streaming upstream and aggregate.
 		useUpstreamStream = true
 	}
@@ -710,6 +716,12 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 		}
 		requestIDHeader = "x-request-id"
 
+	case AccountTypePlayground:
+		buildReq = func(ctx context.Context) (*http.Request, string, error) {
+			return nil, "x-request-id", nil
+		}
+		requestIDHeader = "x-request-id"
+
 	default:
 		return nil, fmt.Errorf("unsupported account type: %s", account.Type)
 	}
@@ -738,7 +750,14 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 		}
 		requestIDHeader = idHeader
 
-		resp, err = s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
+		if account.Type == AccountTypePlayground {
+			if s.playgroundGatewayService == nil {
+				return nil, s.writeClaudeError(c, http.StatusBadGateway, "upstream_error", "Playground gateway service not configured")
+			}
+			resp, err = s.playgroundGatewayService.DoGemini(ctx, account, mappedModel, geminiReq)
+		} else {
+			resp, err = s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
+		}
 		if err != nil {
 			return nil, s.handleUpstreamTransportError(ctx, c, account, err)
 		}
@@ -1138,7 +1157,7 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 
 	useUpstreamStream := stream
 	upstreamAction := action
-	if account.Type == AccountTypeOAuth && !stream && action == "generateContent" && strings.TrimSpace(account.GetCredential("project_id")) != "" {
+	if (account.Type == AccountTypeOAuth && !stream && action == "generateContent" && strings.TrimSpace(account.GetCredential("project_id")) != "") || account.Type == AccountTypePlayground {
 		// Code Assist's non-streaming generateContent may return no content; use streaming upstream and aggregate.
 		useUpstreamStream = true
 		upstreamAction = "streamGenerateContent"
@@ -1265,6 +1284,12 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 		}
 		requestIDHeader = "x-request-id"
 
+	case AccountTypePlayground:
+		buildReq = func(ctx context.Context) (*http.Request, string, error) {
+			return nil, "x-request-id", nil
+		}
+		requestIDHeader = "x-request-id"
+
 	default:
 		return nil, s.writeGoogleError(c, http.StatusBadGateway, "Unsupported account type: "+account.Type)
 	}
@@ -1291,7 +1316,14 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 		}
 		requestIDHeader = idHeader
 
-		resp, err = s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
+		if account.Type == AccountTypePlayground {
+			if s.playgroundGatewayService == nil {
+				return nil, s.writeGoogleError(c, http.StatusBadGateway, "Playground gateway service not configured")
+			}
+			resp, err = s.playgroundGatewayService.DoGemini(ctx, account, mappedModel, body)
+		} else {
+			resp, err = s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
+		}
 		if err != nil {
 			transportErr := s.handleUpstreamTransportError(ctx, c, account, err)
 			// countTokens 不因上游链路故障而失败：本地估算兜底，不换号。
@@ -2579,6 +2611,9 @@ type geminiSSECollectStats struct {
 
 // collectGeminiSSEObserved 在聚合的同时把每个解包后的事件原文交给 observe（可为 nil）。
 func collectGeminiSSEObserved(body io.Reader, isOAuth bool, observe func(rawBytes []byte)) (map[string]any, *ClaudeUsage, geminiSSECollectStats, error) {
+	if _, ok := body.(*playgroundBody); ok {
+		return collectPlaygroundSSE(body, observe)
+	}
 	reader := bufio.NewReader(body)
 
 	var last map[string]any

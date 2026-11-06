@@ -648,7 +648,9 @@ export interface SyncUpstreamPreviewParams {
   platform: string
   type: string
   base_url?: string
-  api_key: string
+  api_key?: string
+  cookies?: string
+  proxy_id?: number
   model_mapping?: Record<string, string>
 }
 
@@ -1134,7 +1136,27 @@ export async function refreshOpenCodeGoUsage(id: number): Promise<OpenCodeGoUsag
   return data
 }
 
+export interface PlaygroundBrowserInput { type: 'click' | 'text' | 'key' | 'scroll'; x?: number; y?: number; text?: string; key?: string; delta_y?: number }
+export async function startPlaygroundLogin(proxyId?: number | null, signal?: AbortSignal): Promise<{ id: string }> {
+ const { data } = await apiClient.post('/admin/accounts/playground/login', { proxy_id: proxyId || undefined }, { timeout: 660000, signal }); return data
+}
+export async function playgroundLoginFrame(id: string): Promise<{ image: string }> {
+ const { data } = await apiClient.get(`/admin/accounts/playground/login/${id}/frame`, { timeout: 25000 }); return data
+}
+export async function playgroundLoginInput(id: string, input: PlaygroundBrowserInput): Promise<void> {
+ await apiClient.post(`/admin/accounts/playground/login/${id}/input`, input)
+}
+export async function finishPlaygroundLogin(id: string): Promise<{ token: string; email: string }> {
+ const { data } = await apiClient.post(`/admin/accounts/playground/login/${id}/finish`, {}, { timeout: 45000 }); return data
+}
+export async function cancelPlaygroundLogin(id: string): Promise<void> { await apiClient.delete(`/admin/accounts/playground/login/${id}`) }
+
 export const accountsAPI = {
+  startPlaygroundLogin,
+  playgroundLoginFrame,
+  playgroundLoginInput,
+  finishPlaygroundLogin,
+  cancelPlaygroundLogin,
   list,
   listWithEtag,
   getUpstreamBillingRatesWithEtag,

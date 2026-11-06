@@ -112,7 +112,7 @@ func (s *GeminiMessagesCompatService) forwardClaudeBodyAsChatCompletions(
 	}
 
 	useUpstreamStream := clientStream
-	if account.Type == AccountTypeOAuth && !clientStream && strings.TrimSpace(account.GetCredential("project_id")) != "" {
+	if (account.Type == AccountTypeOAuth && !clientStream && strings.TrimSpace(account.GetCredential("project_id")) != "") || account.Type == AccountTypePlayground {
 		useUpstreamStream = true
 	}
 
@@ -141,7 +141,14 @@ func (s *GeminiMessagesCompatService) forwardClaudeBodyAsChatCompletions(
 		}
 		requestIDHeader = idHeader
 
-		resp, err = s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
+		if account.Type == AccountTypePlayground {
+			if s.playgroundGatewayService == nil {
+				return nil, s.writeChatCompletionsError(c, http.StatusBadGateway, "upstream_error", "Playground gateway service not configured")
+			}
+			resp, err = s.playgroundGatewayService.DoGemini(ctx, account, mappedModel, geminiReq)
+		} else {
+			resp, err = s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
+		}
 		if err != nil {
 			return nil, s.handleUpstreamTransportError(ctx, c, account, err)
 		}
@@ -446,6 +453,11 @@ func (s *GeminiMessagesCompatService) buildGeminiChatCompletionsUpstreamRequestF
 				return nil, "", err
 			}
 			return upstreamReq, "x-request-id", nil
+		}, "x-request-id"
+
+	case AccountTypePlayground:
+		return func(ctx context.Context) (*http.Request, string, error) {
+			return nil, "x-request-id", nil
 		}, "x-request-id"
 
 	default:

@@ -9,6 +9,7 @@ import (
 	dbent "github.com/Wei-Shaw/sub2api/ent"
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/payment"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/aistudio"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
@@ -266,6 +267,7 @@ func ProvideAccountTestService(
 	openAIGatewayService *OpenAIGatewayService,
 	settingService *SettingService,
 	pluginManager *PluginManager,
+	playgroundBrowser *PlaygroundBrowserService,
 ) *AccountTestService {
 	service := NewAccountTestService(
 		accountRepo,
@@ -277,6 +279,7 @@ func ProvideAccountTestService(
 		cfg,
 		tlsFPProfileService,
 	)
+	service.playgroundGatewayService.browser = playgroundBrowser
 	service.agentIdentityWS = openAIGatewayService
 	service.SetOpenAIGatewayService(openAIGatewayService)
 	service.SetSettingService(settingService)
@@ -902,7 +905,8 @@ var ProviderSet = wire.NewSet(
 	NewAntigravityOAuthService,
 	ProvideOAuthRefreshAPI,
 	ProvideGeminiTokenProvider,
-	NewGeminiMessagesCompatService,
+	ProvidePlaygroundBrowserService,
+	ProvideGeminiMessagesCompatService,
 	ProvideAntigravityTokenProvider,
 	ProvideGrokTokenProvider,
 	ProvideOpenAITokenProvider,
@@ -1088,5 +1092,16 @@ func ProvideChannelMonitorV2Aggregator(repo ChannelMonitorV2Repository, db *sql.
 func ProvideClaudeResetCreditService(accounts AccountRepository, tokens *ClaudeTokenProvider, proxies ProxyRepository, settings *SettingService, idem *IdempotencyCoordinator, locks LeaderLockCache) *ClaudeResetCreditService {
 	s := NewClaudeResetCreditService(accounts, tokens, proxies, settings)
 	s.ConfigureRedemption(idem, locks)
+	return s
+}
+
+func ProvidePlaygroundBrowserService(client *redis.Client, proxies ProxyRepository, accounts AccountRepository) *PlaygroundBrowserService {
+	service := NewPlaygroundBrowserService(&aistudio.SessionCache{Client: client}, proxies)
+	service.startProfileCleanup(accounts)
+	return service
+}
+func ProvideGeminiMessagesCompatService(accountRepo AccountRepository, groupRepo GroupRepository, cache GatewayCache, schedulerSnapshot *SchedulerSnapshotService, tokenProvider *GeminiTokenProvider, rateLimitService *RateLimitService, httpUpstream HTTPUpstream, antigravityGatewayService *AntigravityGatewayService, cfg *config.Config, browser *PlaygroundBrowserService) *GeminiMessagesCompatService {
+	s := NewGeminiMessagesCompatService(accountRepo, groupRepo, cache, schedulerSnapshot, tokenProvider, rateLimitService, httpUpstream, antigravityGatewayService, cfg)
+	s.playgroundGatewayService.browser = browser
 	return s
 }

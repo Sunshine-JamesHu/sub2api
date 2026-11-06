@@ -6,7 +6,7 @@ var SensitiveCredentialKeys = []string{
 	// OAuth
 	"access_token", "refresh_token", "id_token", "agent_private_key",
 	// API Key 类
-	"api_key", "session_key", "cookie",
+	"api_key", "session_key", "cookie", "cookies", "playground_storage_state", "playground_login_token", "wrapped_binding_key", "gaia_id",
 	// Grok Web SSO / password (must never persist or echo after Build OAuth)
 	"password", "sso_token", "sso", "sso-rw", "clearTextPassword",
 	// 云服务凭据

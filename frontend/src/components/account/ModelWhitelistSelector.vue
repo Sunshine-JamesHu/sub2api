@@ -170,7 +170,10 @@ const props = withDefaults(defineProps<{
     platform: string
     type: string
     base_url?: string
-    api_key: string
+    api_key?: string
+    cookies?: string
+    proxy_id?: number
+    model_mapping?: Record<string, string>
   }
   showSyncButton?: boolean
 }>(), { showSyncButton: true })
