@@ -736,7 +736,7 @@ export async function exportData(options?: {
     sort_order?: 'asc' | 'desc'
   }
   includeProxies?: boolean
-}): Promise<AdminDataPayload> {
+}): Promise<AdminDataPayload & { archive?: Blob }> {
   const params: Record<string, string> = {}
   if (options?.ids && options.ids.length > 0) {
     params.ids = options.ids.join(',')
@@ -754,7 +754,25 @@ export async function exportData(options?: {
   if (options?.includeProxies === false) {
     params.include_proxies = 'false'
   }
-  const { data } = await apiClient.get<AdminDataPayload>('/admin/accounts/data', { params })
+  const { data, headers } = await apiClient.get<AdminDataPayload | Blob>('/admin/accounts/data', {
+    params,
+    responseType: 'arraybuffer',
+    timeout: 300000,
+    // Decode JSON before interceptors so step-up/authentication errors retain
+    // their normal structured shape even when the download itself is binary.
+    transformResponse: [(raw, responseHeaders) => {
+      if (String(responseHeaders['content-type'] || '').includes('application/zip')) {
+        return new Blob([raw], { type: 'application/zip' })
+      }
+      return JSON.parse(typeof raw === 'string' ? raw : new TextDecoder().decode(raw))
+    }]
+  })
+  if (data instanceof Blob) {
+    return {
+      exported_at: '', proxies: [], accounts: [], archive: data,
+      skipped_shadows: Number(headers['x-skipped-shadows'] || 0)
+    }
+  }
   return data
 }
 
@@ -766,6 +784,22 @@ export async function importData(payload: {
     data: payload.data,
     skip_default_group_bind: payload.skip_default_group_bind
   })
+  return data
+}
+
+const archiveImportKeys = new WeakMap<File, string>()
+
+export async function importArchive(file: File): Promise<AdminDataImportResult> {
+  const key = archiveImportKeys.get(file) || `account-archive-${crypto.randomUUID()}`
+  archiveImportKeys.set(file, key)
+  const form = new FormData()
+  form.append('file', file)
+  form.append('skip_default_group_bind', 'true')
+  const { data } = await apiClient.post<AdminDataImportResult>('/admin/accounts/data', form, {
+    headers: { 'Content-Type': undefined, 'Idempotency-Key': key },
+    timeout: 300000
+  })
+  archiveImportKeys.delete(file)
   return data
 }
 
@@ -1197,6 +1231,7 @@ export const accountsAPI = {
   syncFromCrs,
   exportData,
   importData,
+  importArchive,
   importCodexSession,
   createOpenAICodexPAT,
   getAntigravityDefaultModelMapping,

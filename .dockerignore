@@ -30,6 +30,10 @@ Thumbs.db
 # Build artifacts
 dist/
 build/
+.gocache/
+.tmp/
+backend/*.exe
+backend/.installed
 
 # Node modules (will be installed in container)
 frontend/node_modules/
@@ -51,6 +55,9 @@ coverage/
 .env
 .env.*
 !.env.example
+**/.env
+**/.env.*
+!**/.env.example
 
 # 本地闭源插件目录可能包含发布签名私钥，绝不能进入 Docker 构建上下文。
 /plugins/
@@ -58,11 +65,12 @@ coverage/
 # Local config
 config.yaml
 config.local.yaml
-backend/config.yaml
-backend/config.local.yaml
+**/config.yaml
+**/config.local.yaml
 
 # Logs
 *.log
+**/*.log
 logs/
 
 # Temporary files

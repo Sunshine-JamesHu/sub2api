@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"archive/zip"
 	"context"
 	"errors"
 	"fmt"
@@ -222,10 +223,20 @@ func (h *AccountHandler) ExportData(c *gin.Context) {
 		SkippedShadows: skippedShadows,
 	}
 
+	for _, account := range payload.Accounts {
+		if account.Type == service.AccountTypePlayground {
+			h.exportDataArchive(c, payload)
+			return
+		}
+	}
 	response.Success(c, payload)
 }
 
 func (h *AccountHandler) ImportData(c *gin.Context) {
+	if strings.HasPrefix(c.GetHeader("Content-Type"), "multipart/form-data") {
+		h.importDataArchive(c)
+		return
+	}
 	var req DataImportRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "Invalid request: "+err.Error())
@@ -243,6 +254,10 @@ func (h *AccountHandler) ImportData(c *gin.Context) {
 }
 
 func (h *AccountHandler) importData(ctx context.Context, req DataImportRequest) (DataImportResult, error) {
+	return h.importDataWithArchive(ctx, req, nil)
+}
+
+func (h *AccountHandler) importDataWithArchive(ctx context.Context, req DataImportRequest, archive *zip.Reader) (DataImportResult, error) {
 	skipDefaultGroupBind := true
 	if req.SkipDefaultGroupBind != nil {
 		skipDefaultGroupBind = *req.SkipDefaultGroupBind
@@ -432,6 +447,16 @@ func (h *AccountHandler) importData(ctx context.Context, req DataImportRequest) 
 		}
 
 		enrichCredentialsFromIDToken(&item)
+		var rollback func()
+		if item.Type == service.AccountTypePlayground {
+			credentials, cleanup, prepareErr := h.preparePlaygroundArchiveAccount(ctx, item, proxyID, archive)
+			if prepareErr != nil {
+				result.AccountFailed++
+				result.Errors = append(result.Errors, DataImportError{Kind: "account", Name: item.Name, Message: prepareErr.Error()})
+				continue
+			}
+			item.Credentials, rollback = credentials, cleanup
+		}
 
 		accountInput := &service.CreateAccountInput{
 			Name:                 item.Name,
@@ -452,6 +477,9 @@ func (h *AccountHandler) importData(ctx context.Context, req DataImportRequest) 
 
 		created, err := h.adminService.CreateAccount(ctx, accountInput)
 		if err != nil {
+			if rollback != nil {
+				rollback()
+			}
 			result.AccountFailed++
 			result.Errors = append(result.Errors, DataImportError{
 				Kind:    "account",
@@ -693,7 +721,7 @@ func validateDataAccount(item DataAccount) error {
 		return errors.New("account credentials is required")
 	}
 	switch item.Type {
-	case service.AccountTypeOAuth, service.AccountTypeSetupToken, service.AccountTypeAPIKey, service.AccountTypeUpstream:
+	case service.AccountTypeOAuth, service.AccountTypeSetupToken, service.AccountTypeAPIKey, service.AccountTypeUpstream, service.AccountTypePlayground:
 	default:
 		return fmt.Errorf("account type is invalid: %s", item.Type)
 	}

@@ -2316,8 +2316,8 @@ const handleExportData = async () => {
           }
     ))
     const timestamp = formatExportTimestamp()
-    const filename = `sub2api-account-${timestamp}.json`
-    const blob = new Blob([JSON.stringify(dataPayload, null, 2)], { type: 'application/json' })
+    const filename = `sub2api-account-${timestamp}.${dataPayload.archive ? 'zip' : 'json'}`
+    const blob = dataPayload.archive || new Blob([JSON.stringify(dataPayload, null, 2)], { type: 'application/json' })
     const url = URL.createObjectURL(blob)
     const link = document.createElement('a')
     link.href = url

@@ -46,10 +46,8 @@ RUN pnpm run build
 # -----------------------------------------------------------------------------
 # Stage 2: Backend Builder
 # -----------------------------------------------------------------------------
-# --platform=$BUILDPLATFORM: run the Go toolchain on the native host arch and
-# cross-compile to the target arch below. The binary is CGO_ENABLED=0, so this
-# is a clean pure-Go cross-compile — no QEMU emulation of go mod download / go
-# build (emulated networking here was dropping module fetches with EOF).
+# Run Go and Zig on the build host; Zig supplies the target musl/libc++ toolchain
+# used by the prebuilt SpiderMonkey library.
 FROM --platform=${BUILDPLATFORM} ${GOLANG_IMAGE} AS backend-builder
 
 # Build arguments for version info (set by CI)
@@ -62,14 +60,18 @@ ARG GOSUMDB
 ARG TARGETOS
 ARG TARGETARCH
 ARG SPIDERMONKEY_VER=v152.0.4-aistudio2api.1
+ARG ZIG_VER=0.16.0
 
 ENV GOPROXY=${GOPROXY}
 ENV GOSUMDB=${GOSUMDB}
 
 # Install build dependencies and prebuilt SpiderMonkey static libraries for WAA
-RUN apk add --no-cache git ca-certificates tzdata build-base g++ curl xz && \
+RUN apk add --no-cache git ca-certificates tzdata curl xz && \
+    mkdir -p /opt/zig && \
+    curl -fsSL --retry 3 https://ziglang.org/download/${ZIG_VER}/zig-$(uname -m)-linux-${ZIG_VER}.tar.xz \
+    | tar -xJ --strip-components=1 -C /opt/zig && \
     mkdir -p /opt/spidermonkey && \
-    curl -fsSL https://github.com/Mag1cFall/firefox/releases/download/${SPIDERMONKEY_VER}/spidermonkey-${SPIDERMONKEY_VER}-linux-${TARGETARCH:-amd64}.tar.gz \
+    curl -fsSL --retry 3 https://github.com/Mag1cFall/firefox/releases/download/${SPIDERMONKEY_VER}/spidermonkey-${SPIDERMONKEY_VER}-linux-${TARGETARCH:-amd64}.tar.gz \
     | tar -xz -C /opt/spidermonkey
 
 WORKDIR /app/backend
@@ -91,15 +93,19 @@ COPY --from=frontend-builder /app/backend/internal/web/dist ./internal/web/dist
 # Version precedence: build arg VERSION > exact git tag > cmd/server/VERSION
 RUN --mount=type=cache,id=sub2api-gomod,target=/go/pkg/mod \
     --mount=type=cache,id=sub2api-gobuild,target=/root/.cache/go-build \
+    --mount=type=cache,id=sub2api-zig,target=/root/.cache/zig \
     VERSION_VALUE="${VERSION}" && \
     if [ -z "${VERSION_VALUE}" ]; then VERSION_VALUE="$(./scripts/resolve-version.sh)"; fi && \
     DATE_VALUE="${DATE:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}" && \
+    case "${TARGETARCH}" in amd64) ZIG_TARGET=x86_64 ;; arm64) ZIG_TARGET=aarch64 ;; *) echo "Unsupported architecture: ${TARGETARCH}" >&2; exit 1 ;; esac && \
     CGO_ENABLED=1 \
+    CC="/opt/zig/zig cc -target ${ZIG_TARGET}-linux-musl" \
+    CXX="/opt/zig/zig c++ -target ${ZIG_TARGET}-linux-musl" \
     CGO_CXXFLAGS="-I/opt/spidermonkey/include" \
     CGO_LDFLAGS="-L/opt/spidermonkey/lib" \
     GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build \
     -tags embed \
-    -ldflags="-s -w -linkmode external -extldflags '-static -lstdc++ -lm -ldl -lpthread' -X main.Version=${VERSION_VALUE} -X main.Commit=${COMMIT} -X main.Date=${DATE_VALUE} -X main.BuildType=release" \
+    -ldflags="-s -w -linkmode external -extldflags '-static -Wl,--strip-all' -X main.Version=${VERSION_VALUE} -X main.Commit=${COMMIT} -X main.Date=${DATE_VALUE} -X main.BuildType=release" \
     -trimpath \
     -o /app/sub2api \
     ./cmd/server
@@ -168,14 +174,24 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
 ENTRYPOINT ["/app/docker-entrypoint.sh"]
 CMD ["/app/sub2api"]
 
+# Copy only the PostgreSQL client programs and library into the browser image.
+FROM postgres:18-bookworm AS pg-client-glibc
+RUN mkdir -p /export/bin /export/lib && \
+    cp /usr/lib/postgresql/18/bin/pg_dump /usr/lib/postgresql/18/bin/psql /export/bin/ && \
+    cp /usr/local/bin/gosu /export/bin/su-exec && \
+    cp -L /usr/lib/*-linux-gnu/libpq.so.5 /export/lib/libpq.so.5
+
 # Optional glibc browser runtime: docker build --target camoufox .
-FROM postgres:18-bookworm AS camoufox
-RUN apt-get update && apt-get install -y --no-install-recommends \
+FROM debian:bookworm-slim AS camoufox
+RUN apt-get update && apt-get -o Acquire::Retries=3 install -y --no-install-recommends \
     ca-certificates tzdata libgtk-3-0 libasound2 libx11-xcb1 libdbus-glib-1-2 \
     curl libnss3 libgbm1 libxcomposite1 libxdamage1 libxrandr2 libxtst6 fonts-liberation \
+    libzstd1 liblz4-1 libssl3 libgssapi-krb5-2 libldap-2.5-0 libreadline8 \
     && rm -rf /var/lib/apt/lists/* \
-    && groupadd -g 1000 sub2api && useradd -u 1000 -g sub2api -m sub2api \
-    && ln -s /usr/local/bin/gosu /usr/local/bin/su-exec
+    && groupadd -g 1000 sub2api && useradd -u 1000 -g sub2api -m sub2api
+COPY --from=pg-client-glibc /export/bin/ /usr/local/bin/
+COPY --from=pg-client-glibc /export/lib/ /usr/local/lib/
+RUN ldconfig
 WORKDIR /app
 COPY --from=backend-builder --chown=sub2api:sub2api /app/sub2api /app/sub2api
 COPY --from=backend-builder --chown=sub2api:sub2api /app/backend/resources /app/resources
@@ -184,6 +200,7 @@ RUN chmod +x /app/docker-entrypoint.sh && mkdir -p /app/data && chown sub2api:su
 ENV DATA_DIR=/app/data
 # Keep the browser outside the data mount so a fresh persistent volume can use it.
 RUN DATA_DIR=/app /app/sub2api --install-playground-browser && \
+    rm -rf /app/runtime/camoufox/fonts/macos && \
     chown -R sub2api:sub2api /app/runtime
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \

@@ -33,7 +33,7 @@
               {{ selectedFilesLabel || t('admin.accounts.dataImportSelectFile') }}
             </div>
             <div class="text-xs text-gray-500 dark:text-dark-400">
-              JSON (.json)
+              JSON (.json) / ZIP (.zip)
               <span v-if="files.length > 1"> · {{ fileListTitle }}</span>
             </div>
           </div>
@@ -45,7 +45,7 @@
           ref="fileInput"
           type="file"
           class="hidden"
-          accept="application/json,.json"
+          accept="application/json,.json,application/zip,application/x-zip-compressed,.zip"
           multiple
           @change="handleFileChange"
         />
@@ -120,6 +120,7 @@ const appStore = useAppStore()
 
 const importing = ref(false)
 const files = ref<File[]>([])
+const completedFiles = new Set<File>()
 const dragDepth = ref(0)
 const dragActive = computed(() => dragDepth.value > 0)
 const hasCreatedData = ref(false)
@@ -140,6 +141,7 @@ watch(
   (open) => {
     if (open) {
       files.value = []
+      completedFiles.clear()
       dragDepth.value = 0
       hasCreatedData.value = false
       result.value = null
@@ -174,10 +176,13 @@ const isJsonFile = (sourceFile: File) => {
   return name.endsWith('.json') || sourceFile.type === 'application/json'
 }
 
+const isZipFile = (sourceFile: File) => sourceFile.name.toLowerCase().endsWith('.zip') ||
+  ['application/zip', 'application/x-zip-compressed'].includes(sourceFile.type)
+
 const setSelectedFiles = (sourceFiles: FileList | File[] | null | undefined) => {
   if (importing.value) return
   const incoming = Array.from(sourceFiles || [])
-  const picked = incoming.filter(isJsonFile)
+  const picked = incoming.filter((file) => isJsonFile(file) || isZipFile(file))
   if (!picked.length) {
     appStore.showError(t('admin.accounts.dataImportSelectFile'))
     return
@@ -187,7 +192,12 @@ const setSelectedFiles = (sourceFiles: FileList | File[] | null | undefined) => 
       t('admin.accounts.dataImportIgnoredFiles', { count: incoming.length - picked.length })
     )
   }
+  if (picked.some((file) => isZipFile(file) && file.size > 256 * 1024 * 1024)) {
+    appStore.showError(t('admin.accounts.dataImportArchiveTooLarge'))
+    return
+  }
   files.value = picked
+  completedFiles.clear()
   result.value = null
 }
 
@@ -275,7 +285,9 @@ const handleImport = async () => {
   importing.value = true
   try {
     const dataPayloads: AdminDataPayload[] = []
-    for (const sourceFile of files.value) {
+    const pendingFiles = files.value.filter((file) => !completedFiles.has(file))
+    const jsonFiles = pendingFiles.filter((file) => !isZipFile(file))
+    for (const sourceFile of jsonFiles) {
       let parsed: unknown
       try {
         parsed = JSON.parse(await readFileAsText(sourceFile))
@@ -291,14 +303,30 @@ const handleImport = async () => {
       }
       dataPayloads.push(parsed)
     }
-    const dataPayload = mergeDataPayloads(dataPayloads)
-
-    const res = await adminAPI.accounts.importData({
-      data: dataPayload,
-      skip_default_group_bind: true
-    })
-
-    result.value = res
+    const res: AdminDataImportResult = result.value ? { ...result.value } : {
+      proxy_created: 0, proxy_reused: 0, proxy_failed: 0,
+      account_created: 0, account_failed: 0, errors: []
+    }
+    const accumulate = (part: AdminDataImportResult, sourceFiles: File[]) => {
+      res.proxy_created += part.proxy_created
+      res.proxy_reused += part.proxy_reused
+      res.proxy_failed += part.proxy_failed
+      res.account_created += part.account_created
+      res.account_failed += part.account_failed
+      res.errors = [...(res.errors || []), ...(part.errors || [])]
+      result.value = { ...res }
+      sourceFiles.forEach((file) => completedFiles.add(file))
+      if (part.account_created > 0 || part.proxy_created > 0) hasCreatedData.value = true
+    }
+    if (dataPayloads.length) {
+      accumulate(await adminAPI.accounts.importData({
+        data: mergeDataPayloads(dataPayloads),
+        skip_default_group_bind: true
+      }), jsonFiles)
+    }
+    for (const sourceFile of pendingFiles.filter(isZipFile)) {
+      accumulate(await adminAPI.accounts.importArchive(sourceFile), [sourceFile])
+    }
 
     const msgParams: Record<string, unknown> = {
       account_created: res.account_created,
@@ -315,6 +343,7 @@ const handleImport = async () => {
       appStore.showError(t('admin.accounts.dataImportCompletedWithErrors', msgParams))
     } else {
       appStore.showSuccess(t('admin.accounts.dataImportSuccess', msgParams))
+      hasCreatedData.value = false
       emit('imported')
     }
   } catch (error: any) {

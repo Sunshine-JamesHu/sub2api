@@ -17,7 +17,8 @@ vi.mock('@/stores/app', () => ({
 vi.mock('@/api/admin', () => ({
   adminAPI: {
     accounts: {
-      importData: vi.fn()
+      importData: vi.fn(),
+      importArchive: vi.fn()
     }
   }
 }))
@@ -60,6 +61,7 @@ describe('ImportDataModal', () => {
     showWarning.mockReset()
     const { adminAPI } = await import('@/api/admin')
     vi.mocked(adminAPI.accounts.importData).mockReset()
+    vi.mocked(adminAPI.accounts.importArchive).mockReset()
   })
 
   it('未选择文件时提示错误', async () => {
@@ -67,6 +69,57 @@ describe('ImportDataModal', () => {
 
     await wrapper.find('form').trigger('submit')
     expect(showError).toHaveBeenCalledWith('admin.accounts.dataImportSelectFile')
+  })
+
+  it('ZIP 直接上传到压缩包导入接口', async () => {
+    const { adminAPI } = await import('@/api/admin')
+    vi.mocked(adminAPI.accounts.importArchive).mockResolvedValue({
+      proxy_created: 0, proxy_reused: 0, proxy_failed: 0, account_created: 1, account_failed: 0
+    })
+    const wrapper = mountModal()
+    const input = wrapper.find('input[type="file"]')
+    const file = new File(['synthetic-zip'], 'playground.zip', { type: 'application/zip' })
+    setInputFiles(input.element, [file])
+    await input.trigger('change')
+    await wrapper.find('form').trigger('submit')
+    await flushPromises()
+    expect(adminAPI.accounts.importArchive).toHaveBeenCalledWith(file)
+    expect(adminAPI.accounts.importData).not.toHaveBeenCalled()
+    expect(wrapper.emitted('imported')).toHaveLength(1)
+  })
+
+  it('混合文件导入后若 ZIP 失败，关闭时仍刷新已成功的 JSON', async () => {
+    const { adminAPI } = await import('@/api/admin')
+    vi.mocked(adminAPI.accounts.importData).mockResolvedValue({
+      proxy_created: 0, proxy_reused: 0, proxy_failed: 0, account_created: 1, account_failed: 0
+    })
+    vi.mocked(adminAPI.accounts.importArchive).mockRejectedValue(new Error('ZIP failed'))
+    const wrapper = mountModal()
+    const input = wrapper.find('input[type="file"]')
+    setInputFiles(input.element, [
+      makeJsonFile('regular.json', JSON.stringify({ exported_at: '', proxies: [], accounts: [] })),
+      new File(['synthetic-zip'], 'playground.zip')
+    ])
+    await input.trigger('change')
+    await wrapper.find('form').trigger('submit')
+    await flushPromises()
+    expect(showError).toHaveBeenCalledWith('ZIP failed')
+    await wrapper.find('form').trigger('submit')
+    await flushPromises()
+    expect(adminAPI.accounts.importData).toHaveBeenCalledTimes(1)
+    expect(adminAPI.accounts.importArchive).toHaveBeenCalledTimes(2)
+    await wrapper.findAll('button.btn-secondary')[1]!.trigger('click')
+    expect(wrapper.emitted('imported')).toHaveLength(1)
+  })
+
+  it('选择时拒绝超过 256 MiB 的 ZIP', async () => {
+    const wrapper = mountModal()
+    const input = wrapper.find('input[type="file"]')
+    const file = new File([], 'large.zip')
+    Object.defineProperty(file, 'size', { value: 256 * 1024 * 1024 + 1 })
+    setInputFiles(input.element, [file])
+    await input.trigger('change')
+    expect(showError).toHaveBeenCalledWith('admin.accounts.dataImportArchiveTooLarge')
   })
 
   it('无效 JSON 时按文件名提示解析失败', async () => {

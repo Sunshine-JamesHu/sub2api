@@ -35,6 +35,14 @@ The browser is controlled by authenticated admin endpoints (screenshot, pointer,
 
 Deleting an account (including batch deletion) also removes its bound Profile directory and Redis session variants after the database deletion commits. Cleanup waits for the profile's active request lease. Failed database deletions preserve the profile. Cleanup intents in `profiles/.pending-deletions` survive restarts; interrupted/failed cleanup is retried on startup and every minute. Profiles from cancelled logins and previous reauthorizations are still retained. Profiles contain login material and must be restricted to the service user. Do not commit the data directory.
 
+## Account ZIP backups
+
+Account exports containing any Playground account automatically download a ZIP. Mixed selections include ordinary accounts in the same archive. Selections without Playground accounts continue to export JSON. The ZIP contains `accounts.json` and durable browser files under `profiles/<source profile UUID>/`; disposable caches and browser lock files are excluded. Export waits for the profile's active request lease and renews it while copying, so it does not copy a running recovery browser's database.
+
+The existing account import dialog accepts JSON and ZIP files, including multiple files and drag/drop. ZIP import reuses or creates proxies through the usual flow, restores each Playground profile under a new UUID, and creates the account through a one-time proxy-bound login grant. Existing profiles are never overwritten. A failed account creation removes its newly restored profile. Old JSON files containing only Playground profile IDs cannot restore login state and report that a ZIP backup is required. Groups still need manual binding after import.
+
+ZIP uploads are limited to 256 MiB compressed, 1 GiB uncompressed, 256 MiB per file, 20,000 entries and an 8 MiB account manifest. Unsafe paths, links, special files and duplicate/conflicting paths are rejected. Backups contain browser login material and are not encrypted. The destination must have the supported Camoufox runtime and Redis configured. Redis sessions are rebuilt from the restored profile on the first request; Google may still require interactive reauthorization.
+
 ## Docker
 
 The standard image is Alpine/musl; the official Camoufox binary requires glibc. Build the dedicated target:
@@ -44,7 +52,7 @@ docker build --target camoufox -t sub2api:camoufox .
 docker run --rm -v sub2api-data:/app/data sub2api:camoufox --install-playground-browser
 ```
 
-Use that image in the existing Compose service, retaining its database/Redis settings and `/app/data` volume. The browser target includes PostgreSQL 18 client tools and GTK/Firefox libraries. Browser profiles and installed runtime live in the mounted data directory.
+Use that image in the existing Compose service, retaining its database/Redis settings and `/app/data` volume. The browser target uses Debian slim with PostgreSQL 18 client tools, GTK/Firefox libraries and the pinned Camoufox browser under `/app/runtime/camoufox`, outside the data mount. It omits the PostgreSQL server and unused macOS fonts while retaining Windows/Linux fonts for the Windows fingerprint and rendering fallback. Browser profiles remain in the mounted data directory. A separately installed runtime under `/app/data/runtime/camoufox` takes precedence over the bundled browser.
 
 All supplied Compose variants mount `/app/data` (named volume or host `./data`), so `/app/data/aistudio/profiles` survives container restarts and recreation with the same volume. Do not remove that volume with `docker compose down -v` if you want to keep logins. If overriding `PLAYGROUND_PROFILE_DIR`, mount the overridden directory too. Installations that used the earlier `DATA_DIR/playground-profiles` default should move their existing UUID directories into `DATA_DIR/aistudio/profiles` while the service is stopped, or explicitly retain the old path with `PLAYGROUND_PROFILE_DIR`.
 
