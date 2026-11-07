@@ -198,12 +198,11 @@ func (s *PlaygroundGatewayService) DoGemini(ctx context.Context, account *Accoun
 	return response, nil
 }
 
-// A denied generation must be visible in the account list and excluded from
-// scheduling, whether Google returned HTTP 403 or an RPC 7 stream trailer.
-// Optional bootstrap RPCs, region errors and temporary failures do not establish
-// that this account lacks generation permission.
+// A single RPC 7 can be transient or model-specific; it does not establish that
+// the account is unusable. Briefly avoid only the actual upstream model while
+// preserving the original failure for diagnostics and allowing automatic retry.
 func (s *PlaygroundGatewayService) markGenerationPermissionError(ctx context.Context, account *Account, model string, err error) {
-	if err == nil || ctx.Err() != nil || account == nil || account.Type != AccountTypePlayground || s.accountRepo == nil {
+	if err == nil || ctx.Err() != nil || account == nil || account.Platform != PlatformGemini || account.Type != AccountTypePlayground || s.accountRepo == nil || strings.TrimSpace(model) == "" {
 		return
 	}
 	var rpcErr *aistudio.RPCError
@@ -211,11 +210,14 @@ func (s *PlaygroundGatewayService) markGenerationPermissionError(ctx context.Con
 		(rpcErr.StatusCode != http.StatusForbidden && rpcErr.StatusCode != http.StatusOK) {
 		return
 	}
-	message := fmt.Sprintf("Playground generation permission denied (model %q): %s", model, rpcErr.Error())
+	message := fmt.Sprintf("Playground model temporarily unavailable after generation permission denied (model %q): %s", model, rpcErr.Error())
 	message = truncateString(logredact.RedactText(message, "api_key", "authorization"), 2048)
-	if persistErr := s.accountRepo.SetError(ctx, account.ID, message); persistErr != nil {
-		logger.FromContext(ctx).Warn("playground.account_error_update_failed", zap.Int64("account_id", account.ID), zap.Error(persistErr))
+	resetAt := time.Now().Add(time.Minute)
+	if persistErr := s.accountRepo.SetModelRateLimit(ctx, account.ID, model, resetAt, message); persistErr != nil {
+		logger.FromContext(ctx).Warn("playground.permission_cooldown_update_failed", zap.Int64("account_id", account.ID), zap.String("model", model), zap.Error(persistErr))
+		return
 	}
+	logger.FromContext(ctx).Warn("playground.permission_model_cooldown", zap.Int64("account_id", account.ID), zap.String("model", model), zap.Int("upstream_status", rpcErr.StatusCode), zap.Int("rpc_code", rpcErr.Code), zap.Time("reset_at", resetAt), zap.String("reason", message))
 }
 
 type playgroundBody struct {

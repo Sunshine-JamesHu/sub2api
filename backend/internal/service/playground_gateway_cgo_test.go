@@ -123,7 +123,7 @@ func TestPlaygroundRegionFailureDoesNotRenew(t *testing.T) {
 	require.Zero(t, renewals.Load())
 }
 
-func TestPlaygroundPermissionFailurePersistsAccountError(t *testing.T) {
+func TestPlaygroundPermissionFailureOnlyCoolsDownRequestedModel(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
 		status      int
@@ -153,12 +153,19 @@ func TestPlaygroundPermissionFailurePersistsAccountError(t *testing.T) {
 			var rpcErr *aistudio.RPCError
 			require.ErrorAs(t, err, &rpcErr)
 			require.Equal(t, 7, rpcErr.Code)
-			require.Equal(t, StatusError, repo.account.Status)
-			require.False(t, repo.account.Schedulable)
-			require.Equal(t, 1, repo.errorsRecorded)
-			require.Contains(t, repo.account.ErrorMessage, "tested-model")
-			require.Contains(t, repo.account.ErrorMessage, "RPC 7")
-			require.Contains(t, repo.account.ErrorMessage, "The caller does not have permission")
+			require.Equal(t, StatusActive, repo.account.Status)
+			require.True(t, repo.account.Schedulable)
+			require.Zero(t, repo.errorsRecorded)
+			require.Empty(t, repo.account.ErrorMessage)
+			require.Equal(t, 1, repo.cooldownsRecorded)
+			require.False(t, repo.account.IsSchedulableForModel("tested-model"))
+			require.True(t, repo.account.IsSchedulableForModel("other-model"))
+			require.InDelta(t, time.Minute.Seconds(), repo.account.GetModelRateLimitRemainingTime("tested-model").Seconds(), 2)
+			reason := repo.account.modelRateLimitReason("tested-model")
+			require.Contains(t, reason, "RPC 7")
+			require.Contains(t, reason, "The caller does not have permission")
+			setAccountModelRateLimitSnapshot(&repo.account, "tested-model", time.Now().Add(-time.Second), reason, time.Now())
+			require.True(t, repo.account.IsSchedulableForModel("tested-model"), "cooldown must expire automatically")
 		})
 	}
 }

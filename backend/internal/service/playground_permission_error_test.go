@@ -35,6 +35,7 @@ func TestPlaygroundTemporaryAndUnrelatedFailuresDoNotDisableAccount(t *testing.T
 			require.Equal(t, StatusActive, repo.account.Status)
 			require.True(t, repo.account.Schedulable)
 			require.Zero(t, repo.errorsRecorded)
+			require.Zero(t, repo.cooldownsRecorded)
 		})
 	}
 }
@@ -46,4 +47,45 @@ func TestPlaygroundCancelledRequestDoesNotPersistPermissionError(t *testing.T) {
 	gateway := NewPlaygroundGatewayService(repo)
 	gateway.markGenerationPermissionError(ctx, account, "m", &aistudio.RPCError{Method: "GenerateContent", StatusCode: http.StatusForbidden, Code: 7})
 	require.Zero(t, repo.errorsRecorded)
+	require.Zero(t, repo.cooldownsRecorded)
+}
+
+func TestPlaygroundPermissionCooldownRespectsModelMapping(t *testing.T) {
+	repo, account := newPlaygroundTestAccount(t)
+	repo.account.Status, repo.account.Schedulable = StatusActive, true
+	repo.account.Credentials["model_mapping"] = map[string]any{"alias": "gemini-4-argon", "gemini-4-argon": "different-upstream"}
+	gateway := NewPlaygroundGatewayService(repo)
+	gateway.markGenerationPermissionError(context.Background(), account, "gemini-4-argon", &aistudio.RPCError{Method: "GenerateContent", StatusCode: http.StatusForbidden, Code: 7, Message: "The caller does not have permission"})
+	require.Zero(t, repo.errorsRecorded)
+	require.Equal(t, 1, repo.cooldownsRecorded)
+	require.False(t, repo.account.IsSchedulableForModel("alias"))
+	require.True(t, repo.account.IsSchedulableForModel("gemini-4-argon"), "the upstream model must not be mapped a second time when recording cooldown")
+	require.True(t, repo.account.IsSchedulableForModel("gemini-3.8-flash"))
+}
+
+func TestPlaygroundPermissionDoesNotAffectOtherAccountTypes(t *testing.T) {
+	for _, tc := range []struct{ platform, accountType string }{
+		{PlatformGemini, AccountTypeOAuth},
+		{PlatformGemini, AccountTypeAPIKey},
+		{PlatformOpenAI, AccountTypePlayground},
+		{PlatformAnthropic, AccountTypePlayground},
+		{PlatformAntigravity, AccountTypePlayground},
+	} {
+		t.Run(tc.platform+"/"+tc.accountType, func(t *testing.T) {
+			repo, account := newPlaygroundTestAccount(t)
+			account.Platform, account.Type = tc.platform, tc.accountType
+			gateway := NewPlaygroundGatewayService(repo)
+			gateway.markGenerationPermissionError(context.Background(), account, "m", &aistudio.RPCError{Method: "GenerateContent", StatusCode: http.StatusForbidden, Code: 7})
+			require.Zero(t, repo.errorsRecorded)
+			require.Zero(t, repo.cooldownsRecorded)
+		})
+	}
+}
+
+func TestPlaygroundPermissionWithoutModelDoesNotDisableAccount(t *testing.T) {
+	repo, account := newPlaygroundTestAccount(t)
+	gateway := NewPlaygroundGatewayService(repo)
+	gateway.markGenerationPermissionError(context.Background(), account, " ", &aistudio.RPCError{Method: "GenerateContent", StatusCode: http.StatusForbidden, Code: 7})
+	require.Zero(t, repo.errorsRecorded)
+	require.Zero(t, repo.cooldownsRecorded)
 }

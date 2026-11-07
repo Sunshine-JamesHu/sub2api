@@ -20,9 +20,25 @@ import (
 
 type playgroundTestRepository struct {
 	AccountRepository
-	mu             sync.Mutex
-	account        Account
-	errorsRecorded int
+	mu                sync.Mutex
+	account           Account
+	errorsRecorded    int
+	cooldownsRecorded int
+}
+
+func (r *playgroundTestRepository) SetModelRateLimit(_ context.Context, id int64, model string, until time.Time, reason ...string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if id != r.account.ID {
+		return errors.New("unexpected account")
+	}
+	message := ""
+	if len(reason) > 0 {
+		message = reason[0]
+	}
+	setAccountModelRateLimitSnapshot(&r.account, model, until, message, time.Now())
+	r.cooldownsRecorded++
+	return nil
 }
 
 func (r *playgroundTestRepository) SetError(_ context.Context, id int64, message string) error {
