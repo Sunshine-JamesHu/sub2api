@@ -56,7 +56,7 @@ func (s *GeminiMessagesCompatService) handleResponsesNonStreamingResponseFromGem
 	var raw []byte
 	var err error
 	if upstreamStream {
-		collected, usage, err = collectGeminiSSE(resp.Body, isOAuth)
+		collected, usage, err = collectGeminiSSE(s.cfg, resp.Body, isOAuth)
 		if err == nil && extractGeminiFinishReason(collected) == "" {
 			err = errors.New("upstream stream ended without a finish reason")
 		}

@@ -269,7 +269,7 @@ func TestPlaygroundSSECollectPreservesEveryPartAndFinalStatus(t *testing.T) {
 		"data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"first\"},{\"functionCall\":{\"name\":\"tool\",\"args\":{\"x\":1}}}]}}]}\n\n" +
 		"data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"last\"}]},\"finishReason\":\"STOP\"}]}\n\n")
 	body := &playgroundBody{ReadCloser: io.NopCloser(source), done: func() {}}
-	response, _, err := collectGeminiSSE(body, false)
+	response, _, err := collectGeminiSSE(nil, body, false)
 	require.NoError(t, err)
 	parts := extractGeminiParts(response)
 	require.Len(t, parts, 4)
