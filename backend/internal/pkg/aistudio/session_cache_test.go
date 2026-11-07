@@ -104,3 +104,29 @@ func TestSessionCacheGrantIsSingleUse(t *testing.T) {
 	_, err = cache.ConsumeGrant(context.Background(), token)
 	require.Error(t, err)
 }
+
+func TestSessionCacheLegacyLoginMarkerAllowsRecovery(t *testing.T) {
+	server := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
+	defer client.Close()
+	cache := &SessionCache{Client: client}
+	ctx := context.Background()
+	lease, err := cache.Acquire(ctx, "profile")
+	require.NoError(t, err)
+	defer lease.Release(ctx)
+	key := "playground:{profile}:session:test"
+	marker := key + ":login-required"
+	require.NoError(t, server.Set(marker, "1"))
+	_, hit, err := lease.Get(ctx, key)
+	require.NoError(t, err)
+	require.False(t, hit)
+	require.False(t, server.Exists(marker))
+	// New markers represent a confirmed interactive login requirement.
+	require.NoError(t, lease.RequireLogin(ctx, key))
+	for i := 0; i < 2; i++ {
+		_, _, err = lease.Get(ctx, key)
+		require.ErrorIs(t, err, ErrAuthenticationRequired)
+		require.ErrorContains(t, err, "browser-login-required")
+		require.True(t, server.Exists(marker))
+	}
+}

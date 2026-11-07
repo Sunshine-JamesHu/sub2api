@@ -185,7 +185,7 @@ RUN mkdir -p /export/bin /export/lib && \
 FROM debian:bookworm-slim AS camoufox
 RUN apt-get update && apt-get -o Acquire::Retries=3 install -y --no-install-recommends \
     ca-certificates tzdata libgtk-3-0 libasound2 libx11-xcb1 libdbus-glib-1-2 \
-    curl libnss3 libgbm1 libxcomposite1 libxdamage1 libxrandr2 libxtst6 fonts-liberation \
+    curl wget libnss3 libgbm1 libxcomposite1 libxdamage1 libxrandr2 libxtst6 fonts-liberation \
     libzstd1 liblz4-1 libssl3 libgssapi-krb5-2 libldap-2.5-0 libreadline8 \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd -g 1000 sub2api && useradd -u 1000 -g sub2api -m sub2api

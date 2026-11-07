@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/aistudio"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/camoufox"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/alicebob/miniredis/v2"
 	"github.com/google/uuid"
@@ -19,8 +20,22 @@ import (
 
 type playgroundTestRepository struct {
 	AccountRepository
-	mu      sync.Mutex
-	account Account
+	mu             sync.Mutex
+	account        Account
+	errorsRecorded int
+}
+
+func (r *playgroundTestRepository) SetError(_ context.Context, id int64, message string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if id != r.account.ID {
+		return errors.New("unexpected account")
+	}
+	r.account.Status = StatusError
+	r.account.ErrorMessage = message
+	r.account.Schedulable = false
+	r.errorsRecorded++
+	return nil
 }
 
 func (r *playgroundTestRepository) GetByID(context.Context, int64) (*Account, error) {
@@ -142,13 +157,62 @@ func TestPlaygroundLoggedOutProfileDoesNotLaunchOnEveryRequest(t *testing.T) {
 	var count atomic.Int32
 	gateway.browser.recover = func(context.Context, string, string, string) (aistudio.StorageState, error) {
 		count.Add(1)
-		return aistudio.StorageState{}, aistudio.ErrAuthenticationRequired
+		return aistudio.StorageState{}, camoufox.ErrInteractiveLoginRequired
 	}
 	for i := 0; i < 2; i++ {
 		_, _, err := gateway.acquireSession(context.Background(), account)
 		require.ErrorIs(t, err, aistudio.ErrAuthenticationRequired)
 	}
 	require.EqualValues(t, 1, count.Load())
+}
+
+func TestPlaygroundTransientRecoveryFailureAllowsNextRequest(t *testing.T) {
+	for _, failure := range []struct {
+		name string
+		err  error
+	}{
+		{"timeout", context.DeadlineExceeded},
+		{"cancellation", context.Canceled},
+		{"unconfirmed authentication", aistudio.ErrAuthenticationRequired},
+		{"network", errors.New("proxy unavailable")},
+	} {
+		for _, refresh := range []bool{false, true} {
+			name := failure.name + "/cache_miss"
+			if refresh {
+				name = failure.name + "/upstream_authentication"
+			}
+			t.Run(name, func(t *testing.T) {
+				repo, account := newPlaygroundTestAccount(t)
+				gateway, server := newPlaygroundTestGateway(t, repo)
+				calls := 0
+				gateway.browser.recover = func(context.Context, string, string, string) (aistudio.StorageState, error) {
+					calls++
+					if calls == 1 {
+						return aistudio.StorageState{}, failure.err
+					}
+					return playgroundState("recovered"), nil
+				}
+				if refresh {
+					session, release, err := gateway.acquireSession(context.Background(), account)
+					require.NoError(t, err)
+					err = gateway.refreshSession(session)
+					release()
+					session.Close()
+					require.ErrorIs(t, err, failure.err)
+				} else {
+					server.FastForward(11 * time.Minute)
+					_, _, err := gateway.acquireSession(context.Background(), account)
+					require.ErrorIs(t, err, failure.err)
+				}
+				session, release, err := gateway.acquireSession(context.Background(), account)
+				require.NoError(t, err, "transient failure must not block the next recovery")
+				defer release()
+				defer session.Close()
+				require.Equal(t, 2, calls)
+				require.Equal(t, "recovered", session.StorageState().Cookies[0].Value)
+			})
+		}
+	}
 }
 
 func TestPlaygroundLoginCannotIssueTwoGrants(t *testing.T) {

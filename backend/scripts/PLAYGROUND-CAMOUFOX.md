@@ -23,11 +23,15 @@ The installer downloads the pinned upstream release into `DATA_DIR/runtime/camou
 * **Disk:** each account has a persistent isolated Firefox Profile under `PLAYGROUND_PROFILE_DIR`, default `DATA_DIR/aistudio/profiles` (`data/aistudio/profiles` when DATA_DIR is unset). Docker uses `/app/data/aistudio/profiles/<profile UUID>`. The browser's own cookie database and login state necessarily remain inside this durable profile. Deleting this volume loses the ability to recover sessions.
 * **PostgreSQL:** profile ID, verified email, source metadata, model mapping and account configuration. Reauthorization removes old Cookie/storage-state/Chrome OAuth credentials from the account.
 
-Cache expiry means ten minutes **without a cache touch**, not a forced browser launch every ten minutes during continuous traffic. An authentication failure invalidates the cache immediately and permits one browser recovery/retry. Permission, quota and region errors do not trigger recovery. If Google requires login, a separate Redis marker prevents repeated browser launches for that profile for 24 hours; reauthorizing creates a new profile and bypasses the marker immediately.
+Cache expiry means ten minutes **without a cache touch**, not a forced browser launch every ten minutes during continuous traffic. An authentication failure invalidates the cache immediately and permits one browser recovery/retry. Permission, quota and region errors do not trigger recovery. Only a recovery that still observes a Google sign-in or verification page when its time budget expires creates a separate Redis marker preventing repeated browser launches for 24 hours; reauthorizing creates a new profile and bypasses the marker immediately. Slow page loading, proxy/network failures and request cancellation remain retryable. Legacy markers written by older versions (which could mistake timeouts for logout) are cleared on the next request under the profile lease, allowing recovery again.
 
 Generation forwards the account's actual `GetAiStudioBenefitTier` result in `X-AIStudio-G1-Tier`, matching AIStudio2API: Pro uses `TIER1`, Ultra uses `TIER2`, Plus uses `TIER0`, and Free omits the header. The tier is reloaded after session recovery.
 
+OpenAI `/v1/responses` (including Codex), `/v1/chat/completions`, Claude Messages and native Gemini requests share the Playground generation gateway. Responses returns JSON or native Responses SSE events, including tool calls and terminal events. Codex custom tools and namespace tools are lowered to Gemini functions and restored on the return path. When built-in Google Search/code execution and function declarations coexist, the AI Studio encoder defaults `includeServerSideToolInvocations` to true, as required by Google; an explicitly supplied value is preserved.
+
 Browser restoration verifies the same email before exporting state. It does not guarantee that Google will accept a saved login. MFA, CAPTCHA and expired Google login require interactive action in the account's browser window.
+
+A confirmed `GenerateContent` permission denial (RPC code 7 in HTTP 403 or a stream trailer) marks the account as `error`, stores the tested model and Google's reason, and disables scheduling. This applies to account tests and forwarded requests. Network failures, quota limits, missing models, region errors and optional bootstrap RPC errors do not use this permission-error marker. The existing successful-account-test recovery flow can clear the error after the upstream issue is resolved. This account status is separate from the Redis browser-login-required marker.
 
 Login completion reads AI Studio account data, with a fallback to visible Google account controls when the page does not expose its email in `WIZ_global_data`. Emails in chat/prompt text are never used as identity. Completion failures distinguish a page outside AI Studio (`not-ai-studio`), missing account email (`account-email-missing`), ambiguous account controls (`account-ambiguous`) and a missing session cookie (`session-cookie-missing`). Failed completion leaves the login browser open so the user can finish login and retry.
 
@@ -56,8 +60,31 @@ Use that image in the existing Compose service, retaining its database/Redis set
 
 All supplied Compose variants mount `/app/data` (named volume or host `./data`), so `/app/data/aistudio/profiles` survives container restarts and recreation with the same volume. Do not remove that volume with `docker compose down -v` if you want to keep logins. If overriding `PLAYGROUND_PROFILE_DIR`, mount the overridden directory too. Installations that used the earlier `DATA_DIR/playground-profiles` default should move their existing UUID directories into `DATA_DIR/aistudio/profiles` while the service is stopped, or explicitly retain the old path with `PLAYGROUND_PROFILE_DIR`.
 
+For multiple instances sharing PostgreSQL and Redis, separate `/app/data` mounts do **not** share browser profiles. Add the same persistent profiles mount to every instance's permanent Compose configuration, for example:
+
+```yaml
+volumes:
+  - type: bind
+    source: /srv/sub2api/shared/playground-profiles
+    target: /app/data/aistudio/profiles
+    bind:
+      create_host_path: false
+```
+
+Prepare that source directory with the existing authorized profiles and service-user permissions before recreating containers. Instances on different hosts need shared storage at this path. New logins then write directly into the shared directory; copying profiles between instances after each account addition is unnecessary. With separate directories, an instance can create an empty profile for an account authorized elsewhere, and older versions can write a shared 24-hour login-required marker that blocks the healthy instance too. After repairing the mounts, retry recovery using the corrected login-marker handling described above.
+
 ## Verification
 
-Unit/integration tests use synthetic sessions and miniredis to verify sliding expiry, cold recovery, cross-service serialization, stale-writer fencing, single-use login grants, and authentication-only retries. Set `CAMOUFOX_SMOKE=1` to run the opt-in browser test; it creates a new synthetic profile, verifies screenshot capture, closes/reopens it, and checks a test cookie survives. It never reads your existing Chrome profiles or Google credentials.
+Unit/integration tests use synthetic sessions and miniredis to verify sliding expiry, cold recovery, cross-service serialization, stale-writer fencing, single-use login grants, authentication-only retries, legacy login-marker migration, and retries after transient recovery failures. Set `CAMOUFOX_SMOKE=1` to run the opt-in browser test; it uses offline data pages and a new synthetic profile, verifies screenshot capture, closes/reopens it, and checks a test cookie survives. It never reads your existing Chrome profiles or Google credentials.
 
 Real Google acceptance needs a manual login followed by calls at 0/9/18 minutes, a gap longer than ten minutes, and a service restart with the profile volume preserved. Observe successful responses and browser process exit; synthetic tests alone cannot establish long-term Google session stability.
+
+## Recovery diagnostics
+
+Recovery emits `playground.session_recovery_started`, `playground.session_recovery_completed` or `playground.session_recovery_failed` with account/profile IDs, trigger (`cache_miss` or `upstream_authentication`) and elapsed milliseconds. The start event also reports whether an account proxy is configured. A failure's `requires_login=true` means a confirmed Google sign-in/verification page; temporary failures report `false`. Cookies and proxy credentials are not included by these events.
+
+* `[profile-missing]`, `[profile-empty]` or `[profile-unreadable]`: verify `DATA_DIR`, `PLAYGROUND_PROFILE_DIR`, volume mounts and service-user permissions. Recovery requires an existing nonempty `cookies.sqlite`; it never creates an empty recovery profile. Migrating only the database/account JSON does not migrate the browser profile. Restore the account ZIP or the original profile volume.
+* `[recovery-timeout:...]`: the browser did not finish loading a usable AI Studio session within the 90-second startup/recovery budget. Check proxy connectivity and server load, then retry. This does not set the 24-hour login marker.
+* `[browser-login-required]`: recovery observed Google requesting sign-in/verification. Open the account edit form, complete browser authorization and save. A cookie's nominal expiry alone cannot prove Google still accepts it, especially after moving between server IPs.
+
+For a server-only failure, compare the failed event with the preceding start event and inspect the same profile's mounted directory. Preserve the failure's reason and duration when collecting logs; omit cookie values, tokens and proxy passwords.

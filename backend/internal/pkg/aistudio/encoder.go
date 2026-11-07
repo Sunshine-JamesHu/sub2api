@@ -206,12 +206,15 @@ func EncodeGenerateContentRequest(model string, req *antigravity.GeminiRequest, 
 
 	// 5. Tools
 	var toolsWire []any
+	hasBuiltInTools, hasFunctions := false, false
 	if len(req.Tools) > 0 {
 		for _, t := range req.Tools {
 			if t.CodeExecution != nil {
+				hasBuiltInTools = true
 				toolsWire = append(toolsWire, []any{[]any{}})
 			}
 			if t.GoogleSearch != nil {
+				hasBuiltInTools = true
 				searchTypes := []any{[]any{}}
 				if t.GoogleSearch.EnhancedContent != nil && t.GoogleSearch.EnhancedContent.ImageSearch != nil {
 					searchTypes = append(searchTypes, []any{})
@@ -219,6 +222,7 @@ func EncodeGenerateContentRequest(model string, req *antigravity.GeminiRequest, 
 				toolsWire = append(toolsWire, []any{nil, nil, nil, []any{nil, searchTypes}})
 			}
 			if len(t.FunctionDeclarations) > 0 {
+				hasFunctions = true
 				decls := make([]any, 0, len(t.FunctionDeclarations))
 				for _, fd := range t.FunctionDeclarations {
 					if fd.Name == "" {
@@ -247,6 +251,7 @@ func EncodeGenerateContentRequest(model string, req *antigravity.GeminiRequest, 
 		switch strings.ToUpper(req.ToolConfig.FunctionCallingConfig.Mode) {
 		case "NONE":
 			toolsWire = []any{}
+			hasBuiltInTools, hasFunctions = false, false
 		case "", "AUTO", "ANY", "VALIDATED":
 		default:
 			return nil, fmt.Errorf("unsupported function calling mode %q", req.ToolConfig.FunctionCallingConfig.Mode)
@@ -296,6 +301,9 @@ func EncodeGenerateContentRequest(model string, req *antigravity.GeminiRequest, 
 	}
 	if req.ToolConfig != nil && req.ToolConfig.IncludeServerSideToolInvocations != nil {
 		wire = setWireField(wire, 13, []any{nil, nil, *req.ToolConfig.IncludeServerSideToolInvocations})
+	} else if hasBuiltInTools && hasFunctions {
+		// AI Studio requires this when built-in tools and function calling coexist.
+		wire = setWireField(wire, 13, []any{nil, nil, true})
 	}
 	wire[10] = int64(1)
 

@@ -86,6 +86,10 @@ func (m *Manager) RemoveProfile(profile string) error {
 }
 
 func (m *Manager) Start(ctx context.Context, profile, proxy string) (_ *Browser, err error) {
+	return m.start(ctx, profile, proxy, aistudio.AIStudioOrigin+"/prompts/new_chat")
+}
+
+func (m *Manager) start(ctx context.Context, profile, proxy, initialURL string) (_ *Browser, err error) {
 	ctx, cancel := context.WithCancel(ctx)
 	stop := context.AfterFunc(m.life, cancel)
 	defer func() {
@@ -261,7 +265,7 @@ func (m *Manager) Start(ctx context.Context, profile, proxy string) (_ *Browser,
 	}
 	b.tab = roots.Contexts[0].Context
 	_, _ = b.Command(ctx, "browsingContext.setViewport", map[string]any{"context": b.tab, "viewport": map[string]int{"width": 1100, "height": 780}})
-	if _, err = b.Command(ctx, "browsingContext.navigate", map[string]any{"context": b.tab, "url": aistudio.AIStudioOrigin + "/prompts/new_chat", "wait": "none"}); err != nil {
+	if _, err = b.Command(ctx, "browsingContext.navigate", map[string]any{"context": b.tab, "url": initialURL, "wait": "none"}); err != nil {
 		var failure *commandError
 		if !errors.As(err, &failure) || !strings.Contains(failure.Detail, "NS_ERROR_ABORT") {
 			return nil, err
@@ -422,6 +426,7 @@ func (b *Browser) Capture(ctx context.Context, expected string) (aistudio.Storag
 	}
 	var page struct {
 		Origin   string                 `json:"origin"`
+		Pathname string                 `json:"pathname"`
 		Email    string                 `json:"email"`
 		Identity string                 `json:"identity"`
 		Storage  []aistudio.StorageItem `json:"storage"`
@@ -430,13 +435,13 @@ func (b *Browser) Capture(ctx context.Context, expected string) (aistudio.Storag
 		return state, "", err
 	}
 	if page.Origin != aistudio.AIStudioOrigin {
-		return state, "", fmt.Errorf("%w: [not-ai-studio] finish Google login and open the AI Studio workbench before completing authorization", aistudio.ErrAuthenticationRequired)
+		return state, "", &captureStateError{reason: "not-ai-studio", detail: "finish Google login and open the AI Studio workbench before completing authorization", interactive: isInteractiveLoginPage(page.Origin, page.Pathname)}
 	}
 	if page.Identity == "ambiguous" {
-		return state, "", fmt.Errorf("%w: [account-ambiguous] multiple Google accounts are visible; close the account switcher and select the intended AI Studio account", aistudio.ErrAuthenticationRequired)
+		return state, "", &captureStateError{reason: "account-ambiguous", detail: "multiple Google accounts are visible; close the account switcher and select the intended AI Studio account"}
 	}
 	if !strings.Contains(page.Email, "@") {
-		return state, "", fmt.Errorf("%w: [account-email-missing] AI Studio is open but its signed-in email is not available; wait for the page to load or open the Google account menu, then complete authorization again", aistudio.ErrAuthenticationRequired)
+		return state, "", &captureStateError{reason: "account-email-missing", detail: "AI Studio is open but its signed-in email is not available; wait for the page to load or open the Google account menu, then complete authorization again"}
 	}
 	if expected != "" && !strings.EqualFold(expected, page.Email) {
 		return state, "", errors.New("Camoufox account does not match the saved account")
@@ -490,7 +495,7 @@ func (b *Browser) Capture(ctx context.Context, expected string) (aistudio.Storag
 	}
 	state.Origins = []aistudio.StorageOrigin{{Origin: page.Origin, LocalStorage: page.Storage}}
 	if _, ok := state.CookieValue("SAPISID", aistudio.AIStudioReferer, time.Now()); !ok {
-		return state, "", fmt.Errorf("%w: [session-cookie-missing] the browser has no valid SAPISID cookie for AI Studio; finish Google login before completing authorization", aistudio.ErrAuthenticationRequired)
+		return state, "", &captureStateError{reason: "session-cookie-missing", detail: "the browser has no valid SAPISID cookie for AI Studio; finish Google login before completing authorization"}
 	}
 	if err = state.SetBrowserFingerprint(b.fingerprint); err != nil {
 		return state, "", err
@@ -533,27 +538,21 @@ func (b *Browser) Close() {
 }
 
 func (m *Manager) Recover(ctx context.Context, profile, proxy, email string) (aistudio.StorageState, error) {
-	ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	if err := m.requireRecoveryProfile(profile); err != nil {
+		return aistudio.StorageState{}, err
+	}
+	parent := ctx
+	ctx, cancel := context.WithTimeout(parent, 90*time.Second)
 	defer cancel()
 	b, err := m.Start(ctx, profile, proxy)
 	if err != nil {
 		return aistudio.StorageState{}, err
 	}
 	defer b.Close()
-	ticker := time.NewTicker(time.Second)
-	defer ticker.Stop()
-	for {
-		state, _, err := b.Capture(ctx, email)
-		if err == nil {
-			return state, nil
-		}
-		if !errors.Is(err, aistudio.ErrAuthenticationRequired) {
-			return state, err
-		}
-		select {
-		case <-ctx.Done():
-			return state, fmt.Errorf("%w: open the account's Camoufox login window", aistudio.ErrAuthenticationRequired)
-		case <-ticker.C:
-		}
-	}
+	// The outer deadline bounds browser startup too. Poll against the caller's
+	// context so expiry of our own budget is not mistaken for caller cancellation.
+	deadline, _ := ctx.Deadline()
+	return pollRecoveredState(parent, time.Until(deadline), time.Second, func(captureCtx context.Context) (aistudio.StorageState, string, error) {
+		return b.Capture(captureCtx, email)
+	})
 }

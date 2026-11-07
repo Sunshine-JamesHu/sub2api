@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AxiosInstance } from 'axios'
 
 vi.mock('@/i18n', () => ({ getLocale: () => 'zh-CN' }))
@@ -12,6 +12,10 @@ describe('account archive transfers', () => {
   })
 
   const binary = (text: string) => new TextEncoder().encode(text).buffer
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
 
   it('downloads ZIP and preserves skipped-account warnings', async () => {
     client.defaults.adapter = async (config) => ({
@@ -59,5 +63,27 @@ describe('account archive transfers', () => {
     expect(await importArchive(file)).toMatchObject({ account_created: 1 })
     expect(keys[0]).toBeTruthy()
     expect(keys[1]).toBe(keys[0])
+  })
+
+  it.each([
+    ['randomUUID unavailable', { randomUUID: undefined }],
+    ['crypto unavailable', undefined],
+  ])('imports archives with %s and preserves retry keys', async (_, crypto) => {
+    vi.stubGlobal('crypto', crypto)
+    const keys: string[] = []
+    client.defaults.adapter = async (config) => {
+      keys.push(config.headers.get('Idempotency-Key') as string)
+      if (keys.length === 1) throw new Error('network failure')
+      return { config, status: 200, statusText: 'OK', headers: {}, data: { code: 0, data: { account_created: 1 } } }
+    }
+    const { importArchive } = await import('@/api/admin/accounts')
+    const file = new File(['PK-synthetic'], 'accounts.zip', { type: 'application/zip' })
+    await expect(importArchive(file)).rejects.toBeDefined()
+    expect(await importArchive(file)).toMatchObject({ account_created: 1 })
+    expect(keys[0]).toMatch(/^account-archive-.+/)
+    expect(keys[1]).toBe(keys[0])
+    const nextFile = new File(['PK-synthetic'], 'next.zip', { type: 'application/zip' })
+    await importArchive(nextFile)
+    expect(keys[2]).not.toBe(keys[0])
   })
 })

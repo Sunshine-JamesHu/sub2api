@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -87,12 +88,14 @@ func (l *SessionLease) Release(ctx context.Context) {
 	_, _ = l.script(ctx, `return redis.call('DEL',KEYS[1])`, nil)
 }
 func (l *SessionLease) Get(ctx context.Context, key string) (StorageState, bool, error) {
-	blocked, err := l.script(ctx, `return redis.call('EXISTS',KEYS[2])`, []string{key + ":login-required"})
+	// Old versions marked every recovery timeout as logged out for 24 hours.
+	// Retry those legacy markers once under the existing profile lease.
+	blocked, err := l.script(ctx, `local v=redis.call('GET',KEYS[2]); if v == '1' then redis.call('DEL',KEYS[2]); return 0 end; if v then return 1 end; return 0`, []string{key + ":login-required"})
 	if err != nil {
 		return StorageState{}, false, err
 	}
 	if blocked == int64(1) {
-		return StorageState{}, false, ErrAuthenticationRequired
+		return StorageState{}, false, fmt.Errorf("%w: [browser-login-required] a previous browser recovery confirmed Google sign-in or verification is required; reauthorize the account", ErrAuthenticationRequired)
 	}
 	raw, err := l.script(ctx, `local v=redis.call('GET',KEYS[2]); if v then redis.call('PEXPIRE',KEYS[2],ARGV[2]) end; return v`, []string{key}, SessionCacheTTL.Milliseconds())
 	if errors.Is(err, redis.Nil) {
@@ -118,7 +121,7 @@ func (l *SessionLease) Get(ctx context.Context, key string) (StorageState, bool,
 // A logged-out profile needs interactive reauthorization, not a new browser on
 // every incoming request. Successful reauthorization uses a new profile ID.
 func (l *SessionLease) RequireLogin(ctx context.Context, key string) error {
-	_, err := l.script(ctx, `redis.call('DEL',KEYS[2]); return redis.call('SET',KEYS[3],'1','EX',86400)`, []string{key, key + ":login-required"})
+	_, err := l.script(ctx, `redis.call('DEL',KEYS[2]); return redis.call('SET',KEYS[3],'interactive-login-required','EX',86400)`, []string{key, key + ":login-required"})
 	return err
 }
 func (l *SessionLease) Put(ctx context.Context, key string, state StorageState) error {

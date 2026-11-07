@@ -16,18 +16,20 @@ import (
 
 func TestCaptureAccountControlsAndFailureReasons(t *testing.T) {
 	for _, tc := range []struct {
-		name, origin, email, identity, expected, cookie, failure string
+		name, origin, pathname, email, identity, expected, cookie, failure string
+		interactive                                                        bool
 	}{
 		{name: "account control fallback", origin: aistudio.AIStudioOrigin, email: "selected@example.test", identity: "account-control", cookie: "synthetic"},
 		{name: "page data", origin: aistudio.AIStudioOrigin, email: "selected@example.test", identity: "page-data", cookie: "synthetic", expected: "Selected@example.test"},
-		{name: "login page", origin: "https://accounts.google.com", email: "selected@example.test", failure: "[not-ai-studio]"},
+		{name: "login page", origin: "https://accounts.google.com", pathname: "/v3/signin/identifier", email: "selected@example.test", failure: "[not-ai-studio]", interactive: true},
+		{name: "cookie check redirect", origin: "https://accounts.google.com", pathname: "/CheckCookie", failure: "[not-ai-studio]"},
 		{name: "missing account", origin: aistudio.AIStudioOrigin, identity: "missing", failure: "[account-email-missing]"},
 		{name: "ambiguous account", origin: aistudio.AIStudioOrigin, identity: "ambiguous", failure: "[account-ambiguous]"},
 		{name: "wrong saved account", origin: aistudio.AIStudioOrigin, email: "other@example.test", expected: "selected@example.test", failure: "does not match"},
 		{name: "missing cookie", origin: aistudio.AIStudioOrigin, email: "selected@example.test", failure: "[session-cookie-missing]"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			page, err := json.Marshal(map[string]any{"origin": tc.origin, "email": tc.email, "identity": tc.identity, "storage": []any{}})
+			page, err := json.Marshal(map[string]any{"origin": tc.origin, "pathname": tc.pathname, "email": tc.email, "identity": tc.identity, "storage": []any{}})
 			require.NoError(t, err)
 			upgrader := websocket.Upgrader{}
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -77,6 +79,9 @@ func TestCaptureAccountControlsAndFailureReasons(t *testing.T) {
 				require.Empty(t, email)
 				if strings.HasPrefix(tc.failure, "[") {
 					require.ErrorIs(t, err, aistudio.ErrAuthenticationRequired)
+					var captureErr *captureStateError
+					require.ErrorAs(t, err, &captureErr)
+					require.Equal(t, tc.interactive, captureErr.interactive)
 				}
 				return
 			}

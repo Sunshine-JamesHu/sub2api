@@ -43,5 +43,5 @@
   }
   let storage = [];
   try { storage = Object.entries(localStorage).map(([name, value]) => ({name, value})); } catch {}
-  return JSON.stringify({origin: location.origin, email, identity, storage});
+  return JSON.stringify({origin: location.origin, pathname: location.pathname, email, identity, storage});
 })()

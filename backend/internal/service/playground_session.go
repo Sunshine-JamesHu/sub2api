@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/aistudio"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/camoufox"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -22,6 +24,7 @@ func playgroundCredentialVersion(credentials map[string]any) string {
 }
 
 type playgroundActiveSession struct {
+	accountID                  int64
 	lease                      *aistudio.SessionLease
 	key, profile, proxy, email string
 	ctx                        context.Context
@@ -95,16 +98,16 @@ func (s *PlaygroundGatewayService) acquireSession(ctx context.Context, account *
 		return nil, nil, errPlaygroundSessionChanged
 	}
 	key := playgroundCacheKey(profile, proxy, email)
-	active := &playgroundActiveSession{lease: lease, key: key, profile: profile, proxy: proxy, email: email, ctx: leaseCtx}
+	active := &playgroundActiveSession{accountID: fresh.ID, lease: lease, key: key, profile: profile, proxy: proxy, email: email, ctx: leaseCtx}
 	session, unlock, err := s.waaManager.AcquireFresh(leaseCtx, strconv.FormatInt(account.ID, 10), func() (aistudio.SessionOptions, error) {
 		state, hit, err := lease.Get(leaseCtx, key)
 		if err != nil {
 			return aistudio.SessionOptions{}, err
 		}
 		if !hit {
-			state, err = s.browser.recover(leaseCtx, profile, proxy, email)
+			state, err = s.recoverPlaygroundSession(leaseCtx, fresh.ID, profile, proxy, email, "cache_miss")
 			if err != nil {
-				if errors.Is(err, aistudio.ErrAuthenticationRequired) {
+				if errors.Is(err, camoufox.ErrInteractiveLoginRequired) {
 					_ = lease.RequireLogin(leaseCtx, key)
 				}
 				return aistudio.SessionOptions{}, err
@@ -153,15 +156,27 @@ func (s *PlaygroundGatewayService) refreshSession(session *aistudio.Session) err
 	if err := active.lease.Delete(active.ctx, active.key); err != nil {
 		return err
 	}
-	state, err := s.browser.recover(active.ctx, active.profile, active.proxy, active.email)
+	state, err := s.recoverPlaygroundSession(active.ctx, active.accountID, active.profile, active.proxy, active.email, "upstream_authentication")
 	if err != nil {
-		if errors.Is(err, aistudio.ErrAuthenticationRequired) {
+		if errors.Is(err, camoufox.ErrInteractiveLoginRequired) {
 			_ = active.lease.RequireLogin(active.ctx, active.key)
 		}
 		return err
 	}
 	// ReplaceState commits through the current lease and invalidates the old WAA VM.
 	return session.ReplaceState(state)
+}
+
+func (s *PlaygroundGatewayService) recoverPlaygroundSession(ctx context.Context, accountID int64, profile, proxy, email, trigger string) (aistudio.StorageState, error) {
+	start := time.Now()
+	slog.Info("playground.session_recovery_started", "account_id", accountID, "profile_id", profile, "trigger", trigger, "proxy_configured", proxy != "")
+	state, err := s.browser.recover(ctx, profile, proxy, email)
+	if err != nil {
+		slog.Warn("playground.session_recovery_failed", "account_id", accountID, "profile_id", profile, "trigger", trigger, "duration_ms", time.Since(start).Milliseconds(), "requires_login", errors.Is(err, camoufox.ErrInteractiveLoginRequired), "error", err)
+	} else {
+		slog.Info("playground.session_recovery_completed", "account_id", accountID, "profile_id", profile, "trigger", trigger, "duration_ms", time.Since(start).Milliseconds())
+	}
+	return state, err
 }
 
 func (s *PlaygroundGatewayService) rawGenerate(ctx context.Context, session *aistudio.Session, model string, reqBody []byte) (*http.Response, error) {

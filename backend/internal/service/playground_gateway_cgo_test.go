@@ -122,3 +122,43 @@ func TestPlaygroundRegionFailureDoesNotRenew(t *testing.T) {
 	require.True(t, rpcErr.RegionNotSupported())
 	require.Zero(t, renewals.Load())
 }
+
+func TestPlaygroundPermissionFailurePersistsAccountError(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		status      int
+		body        string
+		expireFirst bool
+	}{
+		{"HTTP403", http.StatusForbidden, `[7,"The caller does not have permission"]`, false},
+		{"RPC7 trailer", http.StatusOK, `[[],[7,"The caller does not have permission"]]`, false},
+		{"HTTP403 after session recovery", http.StatusForbidden, `[7,"The caller does not have permission"]`, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo, account := newPlaygroundTestAccount(t)
+			repo.account.Status = StatusActive
+			repo.account.Schedulable = true
+			gateway, _ := newPlaygroundTestGateway(t, repo)
+			calls := 0
+			gateway.generateContent = func(context.Context, *aistudio.Session, string, []byte) (*http.Response, error) {
+				calls++
+				if tc.expireFirst && calls == 1 {
+					return playgroundResponse(`[[],[16,"session expired"]]`), nil
+				}
+				response := playgroundResponse(tc.body)
+				response.StatusCode = tc.status
+				return response, nil
+			}
+			_, err := gateway.TestConnectionWithPrompt(context.Background(), account, "tested-model", "Hi")
+			var rpcErr *aistudio.RPCError
+			require.ErrorAs(t, err, &rpcErr)
+			require.Equal(t, 7, rpcErr.Code)
+			require.Equal(t, StatusError, repo.account.Status)
+			require.False(t, repo.account.Schedulable)
+			require.Equal(t, 1, repo.errorsRecorded)
+			require.Contains(t, repo.account.ErrorMessage, "tested-model")
+			require.Contains(t, repo.account.ErrorMessage, "RPC 7")
+			require.Contains(t, repo.account.ErrorMessage, "The caller does not have permission")
+		})
+	}
+}

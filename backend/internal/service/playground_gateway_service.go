@@ -14,7 +14,9 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/aistudio"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/Wei-Shaw/sub2api/internal/util/logredact"
 	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
 	"sync"
 )
 
@@ -87,6 +89,7 @@ func (s *PlaygroundGatewayService) DoGemini(ctx context.Context, account *Accoun
 		break
 	}
 	if err != nil {
+		s.markGenerationPermissionError(runCtx, account, model, err)
 		releaseAll()
 		return nil, err
 	}
@@ -154,6 +157,15 @@ func (s *PlaygroundGatewayService) DoGemini(ctx context.Context, account *Accoun
 		for {
 			decodeErr := aistudio.DecodeStream(upstream.Body, consume)
 			_ = upstream.Body.Close()
+			// Stream trailers carry an RPC code without the HTTP/method context.
+			// Attach it here before classifying or persisting the failure.
+			var trailerErr *aistudio.RPCError
+			if errors.As(decodeErr, &trailerErr) && trailerErr.Method == "" {
+				annotated := *trailerErr
+				annotated.Method = "GenerateContent"
+				annotated.StatusCode = upstream.StatusCode
+				decodeErr = &annotated
+			}
 			if errors.Is(decodeErr, aistudio.ErrAuthenticationRequired) && !emitted && attempt == 0 {
 				attempt++
 				decodeErr = s.refreshSession(session)
@@ -163,11 +175,17 @@ func (s *PlaygroundGatewayService) DoGemini(ctx context.Context, account *Accoun
 						continue
 					}
 					if decodeErr == nil {
+						raw, readErr := io.ReadAll(io.LimitReader(upstream.Body, 1<<20))
 						upstream.Body.Close()
-						decodeErr = fmt.Errorf("GenerateContent after renewal returned HTTP %d", upstream.StatusCode)
+						if readErr != nil {
+							decodeErr = readErr
+						} else {
+							decodeErr = aistudio.CheckRPCResponse("GenerateContent", upstream.StatusCode, raw)
+						}
 					}
 				}
 			}
+			s.markGenerationPermissionError(runCtx, account, model, decodeErr)
 			_ = writer.CloseWithError(decodeErr)
 			return
 		}
@@ -178,6 +196,26 @@ func (s *PlaygroundGatewayService) DoGemini(ctx context.Context, account *Accoun
 		response.Header.Set("x-request-id", requestID)
 	}
 	return response, nil
+}
+
+// A denied generation must be visible in the account list and excluded from
+// scheduling, whether Google returned HTTP 403 or an RPC 7 stream trailer.
+// Optional bootstrap RPCs, region errors and temporary failures do not establish
+// that this account lacks generation permission.
+func (s *PlaygroundGatewayService) markGenerationPermissionError(ctx context.Context, account *Account, model string, err error) {
+	if err == nil || ctx.Err() != nil || account == nil || account.Type != AccountTypePlayground || s.accountRepo == nil {
+		return
+	}
+	var rpcErr *aistudio.RPCError
+	if !errors.As(err, &rpcErr) || rpcErr.Method != "GenerateContent" || rpcErr.Code != 7 || strings.Contains(strings.ToLower(rpcErr.Message), "region not supported") ||
+		(rpcErr.StatusCode != http.StatusForbidden && rpcErr.StatusCode != http.StatusOK) {
+		return
+	}
+	message := fmt.Sprintf("Playground generation permission denied (model %q): %s", model, rpcErr.Error())
+	message = truncateString(logredact.RedactText(message, "api_key", "authorization"), 2048)
+	if persistErr := s.accountRepo.SetError(ctx, account.ID, message); persistErr != nil {
+		logger.FromContext(ctx).Warn("playground.account_error_update_failed", zap.Int64("account_id", account.ID), zap.Error(persistErr))
+	}
 }
 
 type playgroundBody struct {

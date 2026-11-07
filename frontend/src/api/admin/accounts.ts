@@ -790,7 +790,11 @@ export async function importData(payload: {
 const archiveImportKeys = new WeakMap<File, string>()
 
 export async function importArchive(file: File): Promise<AdminDataImportResult> {
-  const key = archiveImportKeys.get(file) || `account-archive-${crypto.randomUUID()}`
+  let key = archiveImportKeys.get(file)
+  if (!key) {
+    const requestID = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`
+    key = `account-archive-${requestID}`
+  }
   archiveImportKeys.set(file, key)
   const form = new FormData()
   form.append('file', file)
