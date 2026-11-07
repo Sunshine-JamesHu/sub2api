@@ -1654,7 +1654,7 @@ func TestOpenAIResponsesWebSocket_CyberPolicySecondTurnMarksPerTurnSessionKey(t 
 		secondPayload:         secondPayload,
 		secondTurnCyberPolicy: true,
 		sessionBlocker:        blocker,
-		ingressMode:            service.OpenAIWSIngressModeCtxPool,
+		ingressMode:           service.OpenAIWSIngressModeCtxPool,
 	})
 
 	firstKey := service.CyberSessionBlockKey(1801, nil, []byte(firstPayload))
@@ -1690,7 +1690,7 @@ func TestOpenAIResponsesWebSocket_CyberPolicySecondTurnWithoutExplicitSessionWri
 		secondPayload:         secondPayload,
 		secondTurnCyberPolicy: true,
 		sessionBlocker:        blocker,
-		ingressMode:            service.OpenAIWSIngressModeCtxPool,
+		ingressMode:           service.OpenAIWSIngressModeCtxPool,
 	})
 
 	firstKey := service.CyberSessionBlockKey(1801, nil, []byte(firstPayload))
@@ -2237,16 +2237,31 @@ func (b *openAIWSUsageCyberBlocker) markedKeys() []string {
 type openAIWSUsageCyberBlockStore struct {
 	mu      sync.Mutex
 	blocked map[string]bool
+	lengths map[int64]map[int]bool
+	scopes  map[string]bool
 }
 
-func (s *openAIWSUsageCyberBlockStore) SetCyberSessionBlocked(_ context.Context, _ string, keys []string, _ time.Duration) error {
+func (s *openAIWSUsageCyberBlockStore) SetCyberSessionBlocked(_ context.Context, block service.CyberSessionBlock, _ time.Duration) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.blocked == nil {
 		s.blocked = make(map[string]bool)
 	}
-	for _, key := range keys {
+	for _, key := range block.Keys {
 		s.blocked[key] = true
+	}
+	if block.ScopeKey != "" {
+		if s.scopes == nil {
+			s.scopes = make(map[string]bool)
+			s.lengths = make(map[int64]map[int]bool)
+		}
+		s.scopes[block.ScopeKey] = true
+		if s.lengths[block.APIKeyID] == nil {
+			s.lengths[block.APIKeyID] = make(map[int]bool)
+		}
+		for _, length := range block.TranscriptLengths {
+			s.lengths[block.APIKeyID][length] = true
+		}
 	}
 	return nil
 }
@@ -2257,8 +2272,17 @@ func (s *openAIWSUsageCyberBlockStore) IsCyberSessionBlocked(_ context.Context, 
 	return s.blocked[key], nil
 }
 
-func (s *openAIWSUsageCyberBlockStore) IsCyberSessionScopeActive(_ context.Context, _ string) (bool, error) {
-	return true, nil
+func (s *openAIWSUsageCyberBlockStore) CyberSessionTranscriptLengths(_ context.Context, apiKeyID int64, scopeKey string) ([]int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.scopes[scopeKey] {
+		return nil, nil
+	}
+	var lengths []int
+	for length := range s.lengths[apiKeyID] {
+		lengths = append(lengths, length)
+	}
+	return lengths, nil
 }
 
 func (s *openAIWSUsageCyberBlockStore) FindCyberSessionBlocked(_ context.Context, keys []string) (string, error) {
@@ -2315,19 +2339,21 @@ func (c *openAIWSUsageComboCache) ClaimGrokVideoBilled(context.Context, string, 
 func (c *openAIWSUsageComboCache) ReleaseGrokVideoBilled(context.Context, string) error {
 	return nil
 }
-func (c *openAIWSUsageComboCache) SetCyberSessionBlocked(ctx context.Context, scopeKey string, keys []string, ttl time.Duration) error {
-	return c.store.SetCyberSessionBlocked(ctx, scopeKey, keys, ttl)
+func (c *openAIWSUsageComboCache) SetCyberSessionBlocked(ctx context.Context, block service.CyberSessionBlock, ttl time.Duration) error {
+	return c.store.SetCyberSessionBlocked(ctx, block, ttl)
 }
 func (c *openAIWSUsageComboCache) IsCyberSessionBlocked(ctx context.Context, key string) (bool, error) {
 	return c.store.IsCyberSessionBlocked(ctx, key)
 }
 
-func (c *openAIWSUsageComboCache) SetReasoningContent(context.Context, string, string, time.Duration) error { return nil }
+func (c *openAIWSUsageComboCache) SetReasoningContent(context.Context, string, string, time.Duration) error {
+	return nil
+}
 func (c *openAIWSUsageComboCache) GetReasoningContent(context.Context, string) (string, error) {
 	return "", service.ErrReasoningContentNotFound
 }
-func (c *openAIWSUsageComboCache) IsCyberSessionScopeActive(ctx context.Context, key string) (bool, error) {
-	return c.store.IsCyberSessionScopeActive(ctx, key)
+func (c *openAIWSUsageComboCache) CyberSessionTranscriptLengths(ctx context.Context, apiKeyID int64, scopeKey string) ([]int, error) {
+	return c.store.CyberSessionTranscriptLengths(ctx, apiKeyID, scopeKey)
 }
 func (c *openAIWSUsageComboCache) FindCyberSessionBlocked(ctx context.Context, keys []string) (string, error) {
 	return c.store.FindCyberSessionBlocked(ctx, keys)
