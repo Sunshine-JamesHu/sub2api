@@ -166,6 +166,48 @@ func TestPlaygroundExpiredLeaseCannotWriteCookies(t *testing.T) {
 	require.Error(t, session.Commit())
 }
 
+func TestPlaygroundBusyProfileHasBoundedWaitWithoutInvalidatingAccount(t *testing.T) {
+	repo, account := newPlaygroundTestAccount(t)
+	gateway, _ := newPlaygroundTestGateway(t, repo)
+	profile := account.GetCredential("playground_profile_id")
+	owner, err := gateway.browser.Cache.Acquire(context.Background(), profile)
+	require.NoError(t, err)
+	defer owner.Release(context.Background())
+	ctx := context.Background()
+	started := time.Now()
+	_, _, err = gateway.acquireSession(ctx, account)
+	require.ErrorIs(t, err, errPlaygroundSessionBusy)
+	require.Less(t, time.Since(started), 5*time.Second)
+	require.NoError(t, ctx.Err(), "the wait budget must not cancel the request")
+	require.NoError(t, owner.Renew(ctx), "a failed waiter must not release the owner")
+	require.Zero(t, repo.errorsRecorded)
+	require.Zero(t, repo.cooldownsRecorded)
+	owner.Release(ctx)
+	session, release, err := gateway.acquireSession(ctx, account)
+	require.NoError(t, err, "the next acquisition must still work")
+	defer release()
+	defer session.Close()
+	require.NoError(t, gateway.sessionContext(session).Err(), "acquisition timeout must not become generation timeout")
+}
+
+func TestPlaygroundBusyProfilePreservesRequestCancellation(t *testing.T) {
+	repo, account := newPlaygroundTestAccount(t)
+	gateway, _ := newPlaygroundTestGateway(t, repo)
+	owner, err := gateway.browser.Cache.Acquire(context.Background(), account.GetCredential("playground_profile_id"))
+	require.NoError(t, err)
+	defer owner.Release(context.Background())
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, _, err = gateway.acquireSession(ctx, account)
+	require.ErrorIs(t, err, context.Canceled)
+	require.NotErrorIs(t, err, errPlaygroundSessionBusy)
+	ctx, stop := context.WithTimeout(context.Background(), 25*time.Millisecond)
+	defer stop()
+	_, _, err = gateway.acquireSession(ctx, account)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.NotErrorIs(t, err, errPlaygroundSessionBusy)
+}
+
 func TestPlaygroundLoggedOutProfileDoesNotLaunchOnEveryRequest(t *testing.T) {
 	repo, account := newPlaygroundTestAccount(t)
 	gateway, server := newPlaygroundTestGateway(t, repo)

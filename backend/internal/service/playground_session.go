@@ -17,6 +17,9 @@ import (
 )
 
 var errPlaygroundSessionChanged = errors.New("Playground credentials or proxy changed during the request; retry with the updated account")
+var errPlaygroundSessionBusy = errors.New("Playground browser profile is busy; retry another account")
+
+const playgroundSessionLeaseWaitTimeout = 2 * time.Second
 
 func playgroundCredentialVersion(credentials map[string]any) string {
 	raw, _ := json.Marshal(credentials)
@@ -55,9 +58,17 @@ func (s *PlaygroundGatewayService) acquireSession(ctx context.Context, account *
 		proxy = fresh.Proxy.URL()
 	}
 	waitStarted := time.Now()
-	lease, err := s.browser.Cache.Acquire(ctx, profile)
+	// A profile can also be held by account tests or another instance whose
+	// scheduler slot is missing. Bound only lock acquisition, never generation.
+	waitCtx, stopWaiting := context.WithTimeout(ctx, playgroundSessionLeaseWaitTimeout)
+	lease, err := s.browser.Cache.Acquire(waitCtx, profile)
+	stopWaiting()
 	leaseWait := time.Since(waitStarted)
 	if err != nil {
+		if ctx.Err() == nil && errors.Is(err, context.DeadlineExceeded) {
+			slog.Info("playground.session_busy", "account_id", fresh.ID, "lease_wait_ms", leaseWait.Milliseconds())
+			return nil, nil, errPlaygroundSessionBusy
+		}
 		return nil, nil, err
 	}
 	leaseCtx, cancel := context.WithCancel(ctx)
