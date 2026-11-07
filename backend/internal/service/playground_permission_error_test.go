@@ -5,10 +5,38 @@ import (
 	"errors"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/aistudio"
 	"github.com/stretchr/testify/require"
 )
+
+func TestPlaygroundPermissionBackoffSharedAndSuccessResetsOnlyModel(t *testing.T) {
+	repo, account := newPlaygroundTestAccount(t)
+	repo.account.Status, repo.account.Schedulable = StatusActive, true
+	gateway, _ := newPlaygroundTestGateway(t, repo)
+	other := NewPlaygroundGatewayService(repo)
+	other.browser = gateway.browser
+	err := &aistudio.RPCError{Method: "GenerateContent", StatusCode: http.StatusForbidden, Code: 7, Message: "The caller does not have permission"}
+	ctx := context.Background()
+	for i, delay := range []time.Duration{time.Minute, 5 * time.Minute, 15 * time.Minute, 30 * time.Minute, 30 * time.Minute} {
+		g := gateway
+		if i%2 == 1 {
+			g = other
+		}
+		g.markGenerationPermissionError(ctx, account, "flash", err)
+		require.InDelta(t, delay.Seconds(), repo.account.GetModelRateLimitRemainingTime("flash").Seconds(), 2)
+	}
+	other.markGenerationPermissionError(ctx, account, "argon", err)
+	other.markGenerationSuccess(ctx, account, "flash")
+	require.True(t, repo.account.IsSchedulableForModel("flash"))
+	require.False(t, repo.account.IsSchedulableForModel("argon"))
+	gateway.markGenerationPermissionError(ctx, account, "flash", err)
+	require.InDelta(t, time.Minute.Seconds(), repo.account.GetModelRateLimitRemainingTime("flash").Seconds(), 2)
+	require.Equal(t, StatusActive, repo.account.Status)
+	require.True(t, repo.account.Schedulable)
+	require.Zero(t, repo.errorsRecorded)
+}
 
 func TestPlaygroundTemporaryAndUnrelatedFailuresDoNotDisableAccount(t *testing.T) {
 	for _, tc := range []struct {

@@ -49,6 +49,7 @@ func decodePlaygroundRequest(body []byte) (*antigravity.GeminiRequest, error) {
 
 // DoGemini shares the exact generation path between account tests and all API formats.
 func (s *PlaygroundGatewayService) DoGemini(ctx context.Context, account *Account, model string, body []byte) (*http.Response, error) {
+	started := time.Now()
 	if err := aistudio.CheckRuntime(); err != nil {
 		return nil, err
 	}
@@ -103,6 +104,7 @@ func (s *PlaygroundGatewayService) DoGemini(ctx context.Context, account *Accoun
 	go func() {
 		defer releaseAll()
 		emitted := false
+		firstOutput := false
 		consume := func(event aistudio.StreamEvent) error {
 			parts := []any{}
 			if event.Text != "" {
@@ -144,6 +146,10 @@ func (s *PlaygroundGatewayService) DoGemini(ctx context.Context, account *Accoun
 			}
 			if len(chunk) == 0 {
 				return nil
+			}
+			if !firstOutput && (len(parts) > 0 || event.FinishReason != "") {
+				firstOutput = true
+				logger.FromContext(runCtx).Info("playground.first_output", zap.Int64("account_id", account.ID), zap.String("model", model), zap.Int64("duration_ms", time.Since(started).Milliseconds()))
 			}
 			encoded, err := json.Marshal(chunk)
 			if err != nil {
@@ -187,7 +193,11 @@ func (s *PlaygroundGatewayService) DoGemini(ctx context.Context, account *Accoun
 					}
 				}
 			}
-			s.markGenerationPermissionError(runCtx, account, model, decodeErr)
+			if decodeErr == nil {
+				s.markGenerationSuccess(runCtx, account, model)
+			} else {
+				s.markGenerationPermissionError(runCtx, account, model, decodeErr)
+			}
 			_ = writer.CloseWithError(decodeErr)
 			return
 		}
@@ -200,9 +210,8 @@ func (s *PlaygroundGatewayService) DoGemini(ctx context.Context, account *Accoun
 	return response, nil
 }
 
-// A single RPC 7 can be transient or model-specific; it does not establish that
-// the account is unusable. Briefly avoid only the actual upstream model while
-// preserving the original failure for diagnostics and allowing automatic retry.
+// A single RPC 7 can be transient or model-specific. Back off repeated failures
+// across instances, while preserving other models and allowing automatic recovery.
 func (s *PlaygroundGatewayService) markGenerationPermissionError(ctx context.Context, account *Account, model string, err error) {
 	if err == nil || ctx.Err() != nil || account == nil || account.Platform != PlatformGemini || account.Type != AccountTypePlayground || s.accountRepo == nil || strings.TrimSpace(model) == "" {
 		return
@@ -214,12 +223,40 @@ func (s *PlaygroundGatewayService) markGenerationPermissionError(ctx context.Con
 	}
 	message := fmt.Sprintf("Playground model temporarily unavailable after generation permission denied (model %q): %s", model, rpcErr.Error())
 	message = truncateString(logredact.RedactText(message, "api_key", "authorization"), 2048)
-	resetAt := time.Now().Add(time.Minute)
+	delay := time.Minute
+	var streak int64
+	if profile := account.GetCredential("playground_profile_id"); profile != "" && s.browser != nil && s.browser.Cache != nil {
+		var cacheErr error
+		delay, streak, cacheErr = s.browser.Cache.PermissionFailure(ctx, profile, model)
+		if cacheErr != nil {
+			logger.FromContext(ctx).Warn("playground.permission_streak_update_failed", zap.Int64("account_id", account.ID), zap.Error(cacheErr))
+		}
+	}
+	resetAt := time.Now().Add(delay)
 	if persistErr := s.accountRepo.SetModelRateLimit(ctx, account.ID, model, resetAt, message); persistErr != nil {
 		logger.FromContext(ctx).Warn("playground.permission_cooldown_update_failed", zap.Int64("account_id", account.ID), zap.String("model", model), zap.Error(persistErr))
 		return
 	}
-	logger.FromContext(ctx).Warn("playground.permission_model_cooldown", zap.Int64("account_id", account.ID), zap.String("model", model), zap.Int("upstream_status", rpcErr.StatusCode), zap.Int("rpc_code", rpcErr.Code), zap.Time("reset_at", resetAt), zap.String("reason", message))
+	logger.FromContext(ctx).Warn("playground.permission_model_cooldown", zap.Int64("account_id", account.ID), zap.String("model", model), zap.Int("upstream_status", rpcErr.StatusCode), zap.Int("rpc_code", rpcErr.Code), zap.Int64("failure_streak", streak), zap.Int64("cooldown_seconds", int64(delay.Seconds())), zap.Time("reset_at", resetAt), zap.String("reason", message))
+}
+
+func (s *PlaygroundGatewayService) markGenerationSuccess(ctx context.Context, account *Account, model string) {
+	if ctx.Err() != nil || account == nil || account.Platform != PlatformGemini || account.Type != AccountTypePlayground || strings.TrimSpace(model) == "" || s.browser == nil || s.browser.Cache == nil || s.accountRepo == nil {
+		return
+	}
+	profile := account.GetCredential("playground_profile_id")
+	if profile == "" {
+		return
+	}
+	hadFailures, err := s.browser.Cache.PermissionSuccess(ctx, profile, model)
+	if err == nil && hadFailures {
+		// A successful manual probe may run during cooldown. Clear just this
+		// upstream model, without touching other model limits or account errors.
+		err = s.accountRepo.SetModelRateLimit(ctx, account.ID, model, time.Now(), "Playground generation succeeded; permission cooldown recovered")
+	}
+	if err != nil {
+		logger.FromContext(ctx).Warn("playground.permission_recovery_update_failed", zap.Int64("account_id", account.ID), zap.String("model", model), zap.Error(err))
+	}
 }
 
 type playgroundBody struct {

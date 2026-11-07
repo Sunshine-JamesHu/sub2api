@@ -31,6 +31,7 @@ type playgroundActiveSession struct {
 }
 
 func (s *PlaygroundGatewayService) acquireSession(ctx context.Context, account *Account) (*aistudio.Session, func(), error) {
+	started := time.Now()
 	if s.browser == nil || s.browser.Cache == nil {
 		return nil, nil, errors.New("Playground Camoufox/Redis service is unavailable")
 	}
@@ -53,7 +54,9 @@ func (s *PlaygroundGatewayService) acquireSession(ctx context.Context, account *
 		}
 		proxy = fresh.Proxy.URL()
 	}
+	waitStarted := time.Now()
 	lease, err := s.browser.Cache.Acquire(ctx, profile)
+	leaseWait := time.Since(waitStarted)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -99,11 +102,13 @@ func (s *PlaygroundGatewayService) acquireSession(ctx context.Context, account *
 	}
 	key := playgroundCacheKey(profile, proxy, email)
 	active := &playgroundActiveSession{accountID: fresh.ID, lease: lease, key: key, profile: profile, proxy: proxy, email: email, ctx: leaseCtx}
+	cacheHit := false
 	session, unlock, err := s.waaManager.AcquireFresh(leaseCtx, strconv.FormatInt(account.ID, 10), func() (aistudio.SessionOptions, error) {
 		state, hit, err := lease.Get(leaseCtx, key)
 		if err != nil {
 			return aistudio.SessionOptions{}, err
 		}
+		cacheHit = hit
 		if !hit {
 			state, err = s.recoverPlaygroundSession(leaseCtx, fresh.ID, profile, proxy, email, "cache_miss")
 			if err != nil {
@@ -132,6 +137,7 @@ func (s *PlaygroundGatewayService) acquireSession(ctx context.Context, account *
 		return nil, nil, err
 	}
 	s.activeSessions.Store(session, active)
+	slog.Info("playground.session_acquired", "account_id", fresh.ID, "cache_hit", cacheHit, "lease_wait_ms", leaseWait.Milliseconds(), "duration_ms", time.Since(started).Milliseconds())
 	release := func() { s.activeSessions.Delete(session); unlock(); releaseLease() }
 	return session, release, nil
 }

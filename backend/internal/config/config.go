@@ -1068,6 +1068,8 @@ type GatewayConfig struct {
 	GeminiDebugResponseHeaders bool `mapstructure:"gemini_debug_response_headers"`
 	// GeminiCachedContentMaxTTLSeconds: Gemini 显式缓存单次可设置的最长有效期（秒），<=0 时按 86400 处理
 	GeminiCachedContentMaxTTLSeconds int `mapstructure:"gemini_cached_content_max_ttl_seconds"`
+	// PlaygroundSessionCacheTTLSeconds controls the sliding browser-state cache only.
+	PlaygroundSessionCacheTTLSeconds int `mapstructure:"playground_session_cache_ttl_seconds"`
 	// ConnectionPoolIsolation: 上游连接池隔离策略（proxy/account/account_proxy）
 	ConnectionPoolIsolation string `mapstructure:"connection_pool_isolation"`
 	// ForceCodexCLI: 强制将 OpenAI `/v1/responses` 请求按 Codex CLI 处理。
@@ -2500,6 +2502,7 @@ func setDefaults() {
 	viper.SetDefault("gateway.max_account_switches", 10)
 	viper.SetDefault("gateway.max_account_switches_gemini", 3)
 	viper.SetDefault("gateway.max_same_account_retries_gemini", 4)
+	viper.SetDefault("gateway.playground_session_cache_ttl_seconds", 1800)
 	viper.SetDefault("gateway.force_codex_cli", false)
 	viper.SetDefault("gateway.disable_codex_identity_enforcement", false)
 	viper.SetDefault("gateway.disable_codex_originator_normalization", false)
@@ -3460,6 +3463,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Gateway.MaxSameAccountRetriesGemini < 0 || c.Gateway.MaxSameAccountRetriesGemini > 10 {
 		return fmt.Errorf("gateway.max_same_account_retries_gemini must be between 0-10")
+	}
+	if c.Gateway.PlaygroundSessionCacheTTLSeconds < 60 || c.Gateway.PlaygroundSessionCacheTTLSeconds > 86400 {
+		return fmt.Errorf("gateway.playground_session_cache_ttl_seconds must be between 60-86400")
 	}
 	if c.Gateway.OpenAIFirstOutputTimeoutSeconds < 0 || c.Gateway.OpenAIFirstOutputTimeoutSeconds > 600 ||
 		(c.Gateway.OpenAIFirstOutputTimeoutSeconds > 0 && c.Gateway.OpenAIFirstOutputTimeoutSeconds < 30) {

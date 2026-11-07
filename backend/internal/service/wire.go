@@ -1100,8 +1100,12 @@ func ProvideClaudeResetCreditService(accounts AccountRepository, tokens *ClaudeT
 	return s
 }
 
-func ProvidePlaygroundBrowserService(client *redis.Client, proxies ProxyRepository, accounts AccountRepository) *PlaygroundBrowserService {
-	service := NewPlaygroundBrowserService(&aistudio.SessionCache{Client: client}, proxies)
+func ProvidePlaygroundBrowserService(client *redis.Client, proxies ProxyRepository, accounts AccountRepository, cfg *config.Config) *PlaygroundBrowserService {
+	cache := &aistudio.SessionCache{Client: client}
+	if cfg != nil && cfg.Gateway.PlaygroundSessionCacheTTLSeconds > 0 {
+		cache.TTL = time.Duration(cfg.Gateway.PlaygroundSessionCacheTTLSeconds) * time.Second
+	}
+	service := NewPlaygroundBrowserService(cache, proxies)
 	service.startProfileCleanup(accounts)
 	return service
 }

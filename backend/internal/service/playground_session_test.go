@@ -102,17 +102,17 @@ func TestPlaygroundCacheMissRecoveryAndSlidingExpiry(t *testing.T) {
 	session, release, err := gateway.acquireSession(context.Background(), account)
 	require.NoError(t, err)
 	release()
-	server.FastForward(9 * time.Minute)
+	server.FastForward(aistudio.SessionCacheTTL - time.Minute)
 	session, release, err = gateway.acquireSession(context.Background(), account)
 	require.NoError(t, err)
 	release()
 	require.Zero(t, recoveries.Load())
-	server.FastForward(9 * time.Minute)
+	server.FastForward(aistudio.SessionCacheTTL - time.Minute)
 	session, release, err = gateway.acquireSession(context.Background(), account)
 	require.NoError(t, err)
 	release()
 	require.Zero(t, recoveries.Load())
-	server.FastForward(10*time.Minute + time.Second)
+	server.FastForward(aistudio.SessionCacheTTL + time.Second)
 	session, release, err = gateway.acquireSession(context.Background(), account)
 	require.NoError(t, err)
 	defer release()
@@ -169,7 +169,7 @@ func TestPlaygroundExpiredLeaseCannotWriteCookies(t *testing.T) {
 func TestPlaygroundLoggedOutProfileDoesNotLaunchOnEveryRequest(t *testing.T) {
 	repo, account := newPlaygroundTestAccount(t)
 	gateway, server := newPlaygroundTestGateway(t, repo)
-	server.FastForward(11 * time.Minute)
+	server.FastForward(aistudio.SessionCacheTTL + time.Minute)
 	var count atomic.Int32
 	gateway.browser.recover = func(context.Context, string, string, string) (aistudio.StorageState, error) {
 		count.Add(1)
@@ -216,7 +216,7 @@ func TestPlaygroundTransientRecoveryFailureAllowsNextRequest(t *testing.T) {
 					session.Close()
 					require.ErrorIs(t, err, failure.err)
 				} else {
-					server.FastForward(11 * time.Minute)
+					server.FastForward(aistudio.SessionCacheTTL + time.Minute)
 					_, _, err := gateway.acquireSession(context.Background(), account)
 					require.ErrorIs(t, err, failure.err)
 				}

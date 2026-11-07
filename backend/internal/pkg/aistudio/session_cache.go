@@ -12,14 +12,24 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-const SessionCacheTTL = 10 * time.Minute
+const SessionCacheTTL = 30 * time.Minute
 const sessionLeaseTTL = 30 * time.Second
 
 var ErrSessionLeaseLost = errors.New("Playground session lease lost; retry the request")
 
 // SessionCache deliberately has no in-memory or database fallback. Redis is the
 // authority for exported cookies; the browser profile is the recovery source.
-type SessionCache struct{ Client *redis.Client }
+type SessionCache struct {
+	Client *redis.Client
+	TTL    time.Duration
+}
+
+func (c *SessionCache) sessionTTL() time.Duration {
+	if c.TTL > 0 {
+		return c.TTL
+	}
+	return SessionCacheTTL
+}
 
 // BrowserGrant contains identity/configuration only, never cookies. It is issued
 // after interactive login and consumed once by account creation or reauthorization.
@@ -97,7 +107,7 @@ func (l *SessionLease) Get(ctx context.Context, key string) (StorageState, bool,
 	if blocked == int64(1) {
 		return StorageState{}, false, fmt.Errorf("%w: [browser-login-required] a previous browser recovery confirmed Google sign-in or verification is required; reauthorize the account", ErrAuthenticationRequired)
 	}
-	raw, err := l.script(ctx, `local v=redis.call('GET',KEYS[2]); if v then redis.call('PEXPIRE',KEYS[2],ARGV[2]) end; return v`, []string{key}, SessionCacheTTL.Milliseconds())
+	raw, err := l.script(ctx, `local v=redis.call('GET',KEYS[2]); if v then redis.call('PEXPIRE',KEYS[2],ARGV[2]) end; return v`, []string{key}, l.cache.sessionTTL().Milliseconds())
 	if errors.Is(err, redis.Nil) {
 		return StorageState{}, false, nil
 	}
@@ -132,7 +142,7 @@ func (l *SessionLease) Put(ctx context.Context, key string, state StorageState) 
 	if err != nil {
 		return err
 	}
-	_, err = l.script(ctx, `return redis.call('SET',KEYS[2],ARGV[2],'PX',ARGV[3])`, []string{key}, string(raw), SessionCacheTTL.Milliseconds())
+	_, err = l.script(ctx, `return redis.call('SET',KEYS[2],ARGV[2],'PX',ARGV[3])`, []string{key}, string(raw), l.cache.sessionTTL().Milliseconds())
 	return err
 }
 func (l *SessionLease) Delete(ctx context.Context, key string) error {
