@@ -70,7 +70,7 @@ func EncodeGenerateContentRequest(model string, req *antigravity.GeminiRequest, 
 				if err != nil {
 					return nil, err
 				}
-				callObj := []any{p.FunctionCall.Name, args}
+				callObj := []any{wireFunctionName(p.FunctionCall.Name), args}
 				if p.FunctionCall.ID != "" {
 					callObj = append(callObj, p.FunctionCall.ID)
 				}
@@ -80,7 +80,7 @@ func EncodeGenerateContentRequest(model string, req *antigravity.GeminiRequest, 
 				if err != nil {
 					return nil, err
 				}
-				respObj := []any{p.FunctionResponse.Name, response}
+				respObj := []any{wireFunctionName(p.FunctionResponse.Name), response}
 				if p.FunctionResponse.ID != "" {
 					respObj = append(respObj, p.FunctionResponse.ID)
 				}
@@ -228,7 +228,7 @@ func EncodeGenerateContentRequest(model string, req *antigravity.GeminiRequest, 
 					if fd.Name == "" {
 						return nil, fmt.Errorf("function declaration is missing its name")
 					}
-					decl := []any{fd.Name, fd.Description}
+					decl := []any{wireFunctionName(fd.Name), fd.Description}
 					if fd.Parameters != nil {
 						raw, err := json.Marshal(fd.Parameters)
 						if err != nil {

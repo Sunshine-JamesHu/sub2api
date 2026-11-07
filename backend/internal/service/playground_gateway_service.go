@@ -52,7 +52,8 @@ func (s *PlaygroundGatewayService) DoGemini(ctx context.Context, account *Accoun
 	if err := aistudio.CheckRuntime(); err != nil {
 		return nil, err
 	}
-	if _, err := decodePlaygroundRequest(body); err != nil {
+	request, err := decodePlaygroundRequest(body)
+	if err != nil {
 		return nil, err
 	}
 	runCtx, cancel := context.WithCancel(ctx)
@@ -154,6 +155,7 @@ func (s *PlaygroundGatewayService) DoGemini(ctx context.Context, account *Accoun
 			emitted = true
 			return nil
 		}
+		consume = aistudio.RestoreFunctionNames(request, consume)
 		for {
 			decodeErr := aistudio.DecodeStream(upstream.Body, consume)
 			_ = upstream.Body.Close()
