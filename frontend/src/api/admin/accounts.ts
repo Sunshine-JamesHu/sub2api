@@ -4,6 +4,7 @@
  */
 
 import { apiClient } from '../client'
+import { createRequestId } from '@/utils/requestId'
 import type { OpenAIReferralRefreshResult, OpenAIReferralSendResult } from '@/types/openaiReferrals'
 import type {
   Account,
@@ -220,7 +221,7 @@ function storeDuplicateOperationKey(id: number, key: string | null): void {
 export async function duplicate(id: number): Promise<Account> {
   let idempotencyKey = duplicateOperationKeys.get(id) ?? getStoredDuplicateOperationKey(id)
   if (!idempotencyKey) {
-    const requestID = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`
+    const requestID = createRequestId()
     idempotencyKey = `account-duplicate-${id}-${requestID}`
   }
   duplicateOperationKeys.set(id, idempotencyKey)
@@ -792,7 +793,7 @@ const archiveImportKeys = new WeakMap<File, string>()
 export async function importArchive(file: File): Promise<AdminDataImportResult> {
   let key = archiveImportKeys.get(file)
   if (!key) {
-    const requestID = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`
+    const requestID = createRequestId()
     key = `account-archive-${requestID}`
   }
   archiveImportKeys.set(file, key)

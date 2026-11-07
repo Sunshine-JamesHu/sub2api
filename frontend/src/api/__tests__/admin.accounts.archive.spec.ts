@@ -67,6 +67,8 @@ describe('account archive transfers', () => {
 
   it.each([
     ['randomUUID unavailable', { randomUUID: undefined }],
+    ['randomUUID not callable', { randomUUID: 'unavailable' }],
+    ['randomUUID throws', { randomUUID: () => { throw new Error('HTTPS required') } }],
     ['crypto unavailable', undefined],
   ])('imports archives with %s and preserves retry keys', async (_, crypto) => {
     vi.stubGlobal('crypto', crypto)
