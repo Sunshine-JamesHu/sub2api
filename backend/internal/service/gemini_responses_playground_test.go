@@ -95,3 +95,43 @@ func TestGeminiResponsesPlaygroundRestoresLongToolNames(t *testing.T) {
 		})
 	}
 }
+
+func TestGeminiPlaygroundFlashClientCompatibility(t *testing.T) {
+	for _, protocol := range []string{"responses", "messages"} {
+		t.Run(protocol, func(t *testing.T) {
+			repo, account := newPlaygroundTestAccount(t)
+			gateway, _ := newPlaygroundTestGateway(t, repo)
+			calls := 0
+			gateway.generateContent = func(_ context.Context, _ *aistudio.Session, model string, body []byte) (*http.Response, error) {
+				calls++
+				request, err := decodePlaygroundRequest(body)
+				require.NoError(t, err)
+				raw, err := aistudio.EncodeGenerateContentRequest(model, request, "proof")
+				require.NoError(t, err)
+				var wire []any
+				require.NoError(t, json.Unmarshal(raw, &wire))
+				require.Equal(t, []any{float64(1), nil, nil, float64(1)}, wire[3].([]any)[16])
+				require.NotEmpty(t, wire[6])
+				return playgroundSuccessResponse(), nil
+			}
+			svc := &GeminiMessagesCompatService{cfg: &config.Config{}, playgroundGatewayService: gateway}
+			body := []byte(`{"model":"gemini-3.8-flash","input":"Hi","stream":true,"reasoning":{"effort":"minimal"},"tools":[{"type":"function","name":"send_message","parameters":{"type":"object","properties":{"message":{"type":"string","encrypted":true}},"required":["message"]}}]}`)
+			if protocol == "messages" {
+				body = []byte(`{"model":"gemini-3.8-flash","messages":[{"role":"user","content":"Hi"}],"stream":true,"max_tokens":1024,"thinking":{"type":"disabled"},"tools":[{"name":"send_message","input_schema":{"type":"object","properties":{"message":{"type":"string","encrypted":false}},"required":["message"]}}]}`)
+			}
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest("POST", "/v1/"+protocol, bytes.NewReader(body))
+			var err error
+			if protocol == "responses" {
+				_, err = svc.ForwardAsResponses(context.Background(), c, account, body)
+			} else {
+				_, err = svc.Forward(context.Background(), c, account, body)
+			}
+			require.NoError(t, err)
+			require.Equal(t, 1, calls)
+			require.Contains(t, rec.Body.String(), "OK")
+			require.NotContains(t, rec.Body.String(), "response.failed")
+		})
+	}
+}

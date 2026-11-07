@@ -175,6 +175,11 @@ func EncodeGenerateContentRequest(model string, req *antigravity.GeminiRequest, 
 		if cfg.ThinkingConfig != nil {
 			thinking := []any{int64(1)}
 			if level := strings.ToUpper(cfg.ThinkingConfig.ThinkingLevel); level != "" {
+				// MakerSuite's 3.8 Flash rejects MINIMAL even though the public
+				// Gemini Flash API accepts it. Use its lowest supported level.
+				if strings.TrimPrefix(strings.ToLower(strings.TrimSpace(model)), "models/") == "gemini-3.8-flash" && level == "MINIMAL" {
+					level = "LOW"
+				}
 				values := map[string]int64{"MINIMAL": 4, "LOW": 1, "MEDIUM": 2, "HIGH": 3}
 				code, ok := values[level]
 				if !ok {

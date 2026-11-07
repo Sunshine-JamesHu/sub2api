@@ -365,6 +365,15 @@ func normalizeConstAndMetadata(schema map[string]json.RawMessage) error {
 	delete(schema, "title")
 	delete(schema, "$id")
 	delete(schema, "$comment")
+	// Client tool schemas may annotate fields for client-side encryption.
+	// This metadata has no MakerSuite Schema field; the client executes tools.
+	if raw, ok := schema["encrypted"]; ok {
+		var encrypted bool
+		if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) || json.Unmarshal(raw, &encrypted) != nil {
+			return fmt.Errorf("schema.encrypted 必须是布尔值")
+		}
+		delete(schema, "encrypted")
+	}
 	if raw, ok := schema["const"]; ok {
 		var decoded any
 		_ = json.Unmarshal(raw, &decoded)
