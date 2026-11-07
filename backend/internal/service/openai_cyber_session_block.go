@@ -42,6 +42,9 @@ func CyberSessionExplicitBlockKey(apiKeyID int64, c *gin.Context, body []byte) s
 // CyberSessionBlockKey preserves the original explicit-session API used by
 // older audit hooks while routing through the current key derivation logic.
 func CyberSessionBlockKey(apiKeyID int64, c *gin.Context, body []byte) string {
+	if c == nil {
+		return hashCyberSessionBlockKey(apiKeyID, strings.TrimSpace(openAIRequestPayloadView(body).Get("prompt_cache_key").String()))
+	}
 	return CyberSessionExplicitBlockKey(apiKeyID, c, body)
 }
 
