@@ -1324,6 +1324,41 @@ func TestAnthropicToResponses_ToolChoiceSpecific(t *testing.T) {
 	assert.NotContains(t, tc, "function")
 }
 
+func TestResponsesToAnthropicRequest_GeminiOutputLimits(t *testing.T) {
+	for _, model := range []string{
+		"gemini-3.8-flash", "gemini-3.8-flash-high", "gemini-3.8-flash-medium", "gemini-3.8-flash-low",
+		"gemini-4-argon", "gemini-4-argon-high", "gemini-4-argon-max", "models/gemini-4-argon-high",
+	} {
+		t.Run(model, func(t *testing.T) {
+			for _, limit := range []*int{nil, intPtr(0), intPtr(128), intPtr(8192), intPtr(65536), intPtr(131072)} {
+				req := &ResponsesRequest{Model: model, Input: json.RawMessage(`"hello"`), MaxOutputTokens: limit}
+				converted, err := ResponsesToAnthropicRequest(req)
+				require.NoError(t, err)
+				want := 65536
+				if limit != nil && *limit > 0 {
+					want = *limit
+				}
+				require.Equal(t, want, converted.MaxTokens)
+				// Another protocol conversion hop must retain the output budget.
+				next, err := AnthropicToResponses(converted)
+				require.NoError(t, err)
+				require.Equal(t, want, *next.MaxOutputTokens)
+				last, err := ResponsesToAnthropicRequest(next)
+				require.NoError(t, err)
+				require.Equal(t, want, last.MaxTokens)
+				require.Equal(t, limit, req.MaxOutputTokens)
+			}
+		})
+	}
+	for _, model := range []string{"claude-sonnet-4-5", "gpt-5.2", "gemini-2.5-flash", "gemini-4-argon-preview", "alias"} {
+		t.Run(model, func(t *testing.T) {
+			converted, err := ResponsesToAnthropicRequest(&ResponsesRequest{Model: model, Input: json.RawMessage(`"hello"`)})
+			require.NoError(t, err)
+			require.Equal(t, 8192, converted.MaxTokens)
+		})
+	}
+}
+
 func TestResponsesToAnthropicRequest_ToolChoiceFunctionName(t *testing.T) {
 	req := &ResponsesRequest{
 		Model:      "gpt-5.2",

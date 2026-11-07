@@ -41,6 +41,19 @@ func ResponsesToAnthropicRequest(req *ResponsesRequest) (*AnthropicRequest, erro
 	if out.MaxTokens == 0 {
 		// Anthropic requires max_tokens; default to a sensible value.
 		out.MaxTokens = 8192
+		// A Responses-to-Messages relay must leave enough output room for
+		// these Gemini models. This becomes an explicit limit at later hops.
+		model := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(req.Model)), "models/")
+		if dash := strings.LastIndexByte(model, '-'); dash >= 0 {
+			switch model[dash+1:] {
+			case "minimal", "low", "medium", "high", "xhigh", "max", "tiered":
+				model = model[:dash]
+			}
+		}
+		switch model {
+		case "gemini-3.8-flash", "gemini-4-argon":
+			out.MaxTokens = 65536
+		}
 	}
 
 	// Convert tools
