@@ -132,7 +132,7 @@ func (s *OpenAIGatewayService) IsCyberSessionBlocked(ctx context.Context, key st
 // MarkCyberSessionBlockedLegacy preserves the old single-key behavior for
 // callers that cannot provide a request scope.
 func (s *OpenAIGatewayService) MarkCyberSessionBlockedLegacy(ctx context.Context, key string) {
-	s.MarkCyberSessionBlocked(ctx, "", []string{key})
+	s.MarkCyberSessionBlocked(ctx, CyberSessionBlock{Keys: []string{key}})
 }
 
 // FindCyberSessionBlockedForRequest applies explicit-first lookup followed by

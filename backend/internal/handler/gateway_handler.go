@@ -600,6 +600,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			forceCacheBilling := fs.ForceCacheBilling
 			quotaPlatform := service.QuotaPlatform(c.Request.Context(), apiKey)
 			sessionID := service.ExtractClientSessionID(c)
+			clientIdentity := service.ExtractClientIdentityIDs(c)
 			channelUsageFields := clientRequestedUsageFields(c, channelMapping, reqModel, result.UpstreamModel)
 			h.submitUsageRecordTask(c.Request.Context(), func(ctx context.Context) {
 				if err := h.gatewayService.RecordUsage(ctx, &service.RecordUsageInput{
@@ -615,8 +616,8 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 					UserAgent:          userAgent,
 					IPAddress:          clientIP,
 					SessionID:          sessionID,
-					ThreadID:           service.ExtractClientIdentityIDs(c).ThreadID,
-					WindowID:           service.ExtractClientIdentityIDs(c).WindowID,
+					ThreadID:           clientIdentity.ThreadID,
+					WindowID:           clientIdentity.WindowID,
 					RequestPayloadHash: requestPayloadHash,
 					ForceCacheBilling:  forceCacheBilling,
 					APIKeyService:      h.apiKeyService,
@@ -966,6 +967,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				forceCacheBilling := fs.ForceCacheBilling
 				quotaPlatform := service.QuotaPlatform(c.Request.Context(), currentAPIKey)
 				sessionID := service.ExtractClientSessionID(c)
+				clientIdentity := service.ExtractClientIdentityIDs(c)
 				channelUsageFields := clientRequestedUsageFields(c, channelMapping, reqModel, result.UpstreamModel)
 				h.submitUsageRecordTask(c.Request.Context(), func(ctx context.Context) {
 					if err := h.gatewayService.RecordUsage(ctx, &service.RecordUsageInput{
@@ -981,8 +983,8 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 						UserAgent:          userAgent,
 						IPAddress:          clientIP,
 						SessionID:          sessionID,
-						ThreadID:           service.ExtractClientIdentityIDs(c).ThreadID,
-						WindowID:           service.ExtractClientIdentityIDs(c).WindowID,
+						ThreadID:           clientIdentity.ThreadID,
+						WindowID:           clientIdentity.WindowID,
 						RequestPayloadHash: requestPayloadHash,
 						ForceCacheBilling:  forceCacheBilling,
 						APIKeyService:      h.apiKeyService,
