@@ -31,6 +31,7 @@ func TestPlaygroundQuotaHTTPAndTrailerErrorsPersistCooldown(t *testing.T) {
 	for _, status := range []int{http.StatusTooManyRequests, http.StatusOK} {
 		t.Run(http.StatusText(status), func(t *testing.T) {
 			repo, account := newPlaygroundTestAccount(t)
+			repo.account.Status, repo.account.Schedulable = StatusActive, true
 			gateway, _ := newPlaygroundTestGateway(t, repo)
 			gateway.generateContent = func(context.Context, *aistudio.Session, string, []byte) (*http.Response, error) {
 				body := `[8,"You've reached your usage limit for this model (resets in 4 hours, 17 minutes)."]`
