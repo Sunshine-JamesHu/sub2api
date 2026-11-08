@@ -143,3 +143,19 @@ func TestPlaygroundManualActionNeverFallsBackToUnconditionalWrite(t *testing.T) 
 	NewPlaygroundGatewayService(repo).markManualActionFailure(context.Background(), account, camoufox.ErrInteractiveLoginRequired)
 	require.Zero(t, repo.writes)
 }
+
+func TestPlaygroundManualActionCannotBeUndoneByModelSuccess(t *testing.T) {
+	repo, account := newPlaygroundTestAccount(t)
+	repo.account.Status, repo.account.Schedulable = StatusActive, true
+	gateway, _ := newPlaygroundTestGateway(t, repo)
+	ctx := context.Background()
+	_, _, err := gateway.browser.Cache.PermissionFailure(ctx, account.GetCredential("playground_profile_id"), "flash")
+	require.NoError(t, err)
+	gateway.markManualActionFailure(ctx, account, camoufox.ErrInteractiveLoginRequired)
+	// A late successful in-flight generation can clear only the model cooldown.
+	// It cannot restore account-level scheduling or erase the operator-action error.
+	gateway.markGenerationSuccess(ctx, account, "flash")
+	require.Equal(t, StatusError, repo.account.Status)
+	require.False(t, repo.account.Schedulable)
+	require.Contains(t, repo.account.ErrorMessage, "login_required")
+}
