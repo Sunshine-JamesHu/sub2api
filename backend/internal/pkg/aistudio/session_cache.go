@@ -99,8 +99,9 @@ func (l *SessionLease) Release(ctx context.Context) {
 }
 func (l *SessionLease) Get(ctx context.Context, key string) (StorageState, bool, error) {
 	// Old versions marked every recovery timeout as logged out for 24 hours.
-	// Retry those legacy markers once under the existing profile lease.
-	blocked, err := l.script(ctx, `local v=redis.call('GET',KEYS[2]); if v == '1' then redis.call('DEL',KEYS[2]); return 0 end; if v then return 1 end; return 0`, []string{key + ":login-required"})
+	// Only the exact confirmed marker is evidence for durable quarantine. Legacy
+	// or unknown marker values must allow another recovery under the profile lease.
+	blocked, err := l.script(ctx, `local v=redis.call('GET',KEYS[2]); if v == 'interactive-login-required' then return 1 end; if v then redis.call('DEL',KEYS[2]) end; return 0`, []string{key + ":login-required"})
 	if err != nil {
 		return StorageState{}, false, err
 	}

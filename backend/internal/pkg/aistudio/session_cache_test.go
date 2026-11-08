@@ -116,11 +116,13 @@ func TestSessionCacheLegacyLoginMarkerAllowsRecovery(t *testing.T) {
 	defer lease.Release(ctx)
 	key := "playground:{profile}:session:test"
 	marker := key + ":login-required"
-	require.NoError(t, server.Set(marker, "1"))
-	_, hit, err := lease.Get(ctx, key)
-	require.NoError(t, err)
-	require.False(t, hit)
-	require.False(t, server.Exists(marker))
+	for _, value := range []string{"1", "unknown", "recovery-timeout"} {
+		require.NoError(t, server.Set(marker, value))
+		_, hit, err := lease.Get(ctx, key)
+		require.NoError(t, err)
+		require.False(t, hit)
+		require.False(t, server.Exists(marker))
+	}
 	// New markers represent a confirmed interactive login requirement.
 	require.NoError(t, lease.RequireLogin(ctx, key))
 	for i := 0; i < 2; i++ {
