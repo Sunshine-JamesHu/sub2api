@@ -107,3 +107,19 @@ func TestInteractiveLoginPageClassification(t *testing.T) {
 		require.False(t, isInteractiveLoginPage(page[0], page[1]))
 	}
 }
+
+func TestUnsupportedRegionPageRequiresTrustedHostAndPath(t *testing.T) {
+	for _, tc := range []struct {
+		origin, path string
+		want         bool
+	}{
+		{aistudio.AIStudioOrigin, "/docs/available-regions", true},
+		{"https://ai.google.dev", "/gemini-api/docs/available-regions", true},
+		{aistudio.AIStudioOrigin, "/prompts/new_chat", false},
+		{"https://example.test", "/docs/available-regions", false},
+		{"https://aistudio.google.com.attacker.test", "/docs/available-regions", false},
+		{aistudio.AIStudioOrigin, "/prompts/available-regions", false},
+	} {
+		require.Equal(t, tc.want, isUnsupportedRegionPage(tc.origin, tc.path))
+	}
+}

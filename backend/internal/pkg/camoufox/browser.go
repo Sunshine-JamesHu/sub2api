@@ -434,6 +434,9 @@ func (b *Browser) Capture(ctx context.Context, expected string) (aistudio.Storag
 	if err = json.Unmarshal([]byte(value), &page); err != nil {
 		return state, "", err
 	}
+	if isUnsupportedRegionPage(page.Origin, page.Pathname) {
+		return state, "", ErrRegionNotSupported
+	}
 	if page.Origin != aistudio.AIStudioOrigin {
 		return state, "", &captureStateError{reason: "not-ai-studio", detail: "finish Google login and open the AI Studio workbench before completing authorization", interactive: isInteractiveLoginPage(page.Origin, page.Pathname)}
 	}
@@ -444,7 +447,7 @@ func (b *Browser) Capture(ctx context.Context, expected string) (aistudio.Storag
 		return state, "", &captureStateError{reason: "account-email-missing", detail: "AI Studio is open but its signed-in email is not available; wait for the page to load or open the Google account menu, then complete authorization again"}
 	}
 	if expected != "" && !strings.EqualFold(expected, page.Email) {
-		return state, "", errors.New("Camoufox account does not match the saved account")
+		return state, "", ErrAccountMismatch
 	}
 	// Export the isolated profile, not only the current page's storage partition:
 	// Google login spans accounts.google.com, AI Studio and clients6.google.com.

@@ -64,6 +64,7 @@ func (s *PlaygroundGatewayService) DoGemini(ctx context.Context, account *Accoun
 		return nil, err
 	}
 	runCtx = s.sessionContext(session)
+	account = s.sessionAccount(session)
 	releaseAll := func() { cancel(); release() }
 	attempt := 0
 	generate := s.rawGenerate
@@ -91,6 +92,7 @@ func (s *PlaygroundGatewayService) DoGemini(ctx context.Context, account *Accoun
 		break
 	}
 	if err != nil {
+		s.markManualActionFailure(runCtx, account, err)
 		s.markGenerationPermissionError(runCtx, account, model, err)
 		s.markGenerationQuotaError(runCtx, account, model, err)
 		releaseAll()
@@ -197,6 +199,7 @@ func (s *PlaygroundGatewayService) DoGemini(ctx context.Context, account *Accoun
 			if decodeErr == nil {
 				s.markGenerationSuccess(runCtx, account, model)
 			} else {
+				s.markManualActionFailure(runCtx, account, decodeErr)
 				s.markGenerationPermissionError(runCtx, account, model, decodeErr)
 				s.markGenerationQuotaError(runCtx, account, model, decodeErr)
 			}
@@ -219,7 +222,7 @@ func (s *PlaygroundGatewayService) markGenerationPermissionError(ctx context.Con
 		return
 	}
 	var rpcErr *aistudio.RPCError
-	if !errors.As(err, &rpcErr) || rpcErr.Method != "GenerateContent" || rpcErr.Code != 7 || strings.Contains(strings.ToLower(rpcErr.Message), "region not supported") ||
+	if !errors.As(err, &rpcErr) || rpcErr.Method != "GenerateContent" || rpcErr.Code != 7 || playgroundManualActionReason(err) != "" ||
 		(rpcErr.StatusCode != http.StatusForbidden && rpcErr.StatusCode != http.StatusOK) {
 		return
 	}

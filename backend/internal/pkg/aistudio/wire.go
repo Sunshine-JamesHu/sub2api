@@ -12,6 +12,10 @@ import (
 
 var ErrAuthenticationRequired = errors.New("AI Studio session requires authentication")
 
+// Only browser confirmation (or its cached marker) proves interactive login is
+// required. A raw RPC401/16 still gets an automatic session recovery attempt.
+var ErrInteractiveLoginRequired = fmt.Errorf("%w: [browser-login-required] Google sign-in or verification is required; reauthorize the account", ErrAuthenticationRequired)
+
 type UnverifiedProtocolError struct{ Feature string }
 
 func (e *UnverifiedProtocolError) Error() string {

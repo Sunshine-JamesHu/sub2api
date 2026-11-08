@@ -127,6 +127,7 @@ func TestSessionCacheLegacyLoginMarkerAllowsRecovery(t *testing.T) {
 		_, _, err = lease.Get(ctx, key)
 		require.ErrorIs(t, err, ErrAuthenticationRequired)
 		require.ErrorContains(t, err, "browser-login-required")
+		require.ErrorIs(t, err, ErrInteractiveLoginRequired)
 		require.True(t, server.Exists(marker))
 	}
 }

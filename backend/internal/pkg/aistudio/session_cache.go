@@ -105,7 +105,7 @@ func (l *SessionLease) Get(ctx context.Context, key string) (StorageState, bool,
 		return StorageState{}, false, err
 	}
 	if blocked == int64(1) {
-		return StorageState{}, false, fmt.Errorf("%w: [browser-login-required] a previous browser recovery confirmed Google sign-in or verification is required; reauthorize the account", ErrAuthenticationRequired)
+		return StorageState{}, false, fmt.Errorf("%w: a previous browser recovery confirmed this state", ErrInteractiveLoginRequired)
 	}
 	raw, err := l.script(ctx, `local v=redis.call('GET',KEYS[2]); if v then redis.call('PEXPIRE',KEYS[2],ARGV[2]) end; return v`, []string{key}, l.cache.sessionTTL().Milliseconds())
 	if errors.Is(err, redis.Nil) {

@@ -27,6 +27,8 @@ func TestCaptureAccountControlsAndFailureReasons(t *testing.T) {
 		{name: "ambiguous account", origin: aistudio.AIStudioOrigin, identity: "ambiguous", failure: "[account-ambiguous]"},
 		{name: "wrong saved account", origin: aistudio.AIStudioOrigin, email: "other@example.test", expected: "selected@example.test", failure: "does not match"},
 		{name: "missing cookie", origin: aistudio.AIStudioOrigin, email: "selected@example.test", failure: "[session-cookie-missing]"},
+		{name: "unsupported region", origin: aistudio.AIStudioOrigin, pathname: "/docs/available-regions", failure: ErrRegionNotSupported.Error()},
+		{name: "unsupported region docs", origin: "https://ai.google.dev", pathname: "/gemini-api/docs/available-regions", failure: ErrRegionNotSupported.Error()},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			page, err := json.Marshal(map[string]any{"origin": tc.origin, "pathname": tc.pathname, "email": tc.email, "identity": tc.identity, "storage": []any{}})
@@ -76,6 +78,12 @@ func TestCaptureAccountControlsAndFailureReasons(t *testing.T) {
 			state, email, err := browser.Capture(ctx, tc.expected)
 			if tc.failure != "" {
 				require.ErrorContains(t, err, tc.failure)
+				if tc.name == "wrong saved account" {
+					require.ErrorIs(t, err, ErrAccountMismatch)
+				}
+				if strings.HasPrefix(tc.name, "unsupported region") {
+					require.ErrorIs(t, err, ErrRegionNotSupported)
+				}
 				require.Empty(t, email)
 				if strings.HasPrefix(tc.failure, "[") {
 					require.ErrorIs(t, err, aistudio.ErrAuthenticationRequired)

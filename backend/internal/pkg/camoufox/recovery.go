@@ -14,7 +14,15 @@ import (
 
 // Only a confirmed Google sign-in/challenge page may suppress further browser
 // recoveries. Page loading and network deadlines are retryable failures.
-var ErrInteractiveLoginRequired = fmt.Errorf("%w: [browser-login-required] Google sign-in or verification is required; reauthorize the account", aistudio.ErrAuthenticationRequired)
+var ErrInteractiveLoginRequired = aistudio.ErrInteractiveLoginRequired
+
+var ErrAccountMismatch = errors.New("Camoufox account does not match the saved account; reauthorize the intended account")
+var ErrRegionNotSupported = errors.New("AI Studio does not support the current account or egress region; use a supported account/proxy and restore scheduling manually")
+
+func isUnsupportedRegionPage(origin, pathname string) bool {
+	return (origin == aistudio.AIStudioOrigin && pathname == "/docs/available-regions") ||
+		(origin == "https://ai.google.dev" && pathname == "/gemini-api/docs/available-regions")
+}
 
 type captureStateError struct {
 	reason      string
