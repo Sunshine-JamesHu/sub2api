@@ -28,6 +28,15 @@ func (s *GeminiMessagesCompatService) handleUpstreamTransportError(ctx context.C
 	if isClientCanceledTransportError(ctx, err) {
 		return err
 	}
+	if ctx.Err() == nil && account.Platform == PlatformGemini && account.Type == AccountTypePlayground {
+		if quota := playgroundQuotaFailover(err); quota != nil {
+			setOpsUpstreamError(c, http.StatusTooManyRequests, sanitizeUpstreamErrorMessage(err.Error()), "")
+			event := OpsUpstreamErrorEvent{Platform: account.Platform, AccountID: account.ID, AccountName: account.Name, UpstreamStatusCode: http.StatusTooManyRequests, Kind: "rate_limit", Message: sanitizeUpstreamErrorMessage(err.Error())}
+			event.ProxyID, event.ProxyName = opsUpstreamProxyAttribution(account)
+			appendOpsUpstreamError(c, event)
+			return quota
+		}
+	}
 	safeErr := sanitizeUpstreamErrorMessage(err.Error())
 	setOpsUpstreamError(c, 0, safeErr, "")
 	event := OpsUpstreamErrorEvent{

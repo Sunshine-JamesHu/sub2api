@@ -92,6 +92,7 @@ func (s *PlaygroundGatewayService) DoGemini(ctx context.Context, account *Accoun
 	}
 	if err != nil {
 		s.markGenerationPermissionError(runCtx, account, model, err)
+		s.markGenerationQuotaError(runCtx, account, model, err)
 		releaseAll()
 		return nil, err
 	}
@@ -197,6 +198,7 @@ func (s *PlaygroundGatewayService) DoGemini(ctx context.Context, account *Accoun
 				s.markGenerationSuccess(runCtx, account, model)
 			} else {
 				s.markGenerationPermissionError(runCtx, account, model, decodeErr)
+				s.markGenerationQuotaError(runCtx, account, model, decodeErr)
 			}
 			_ = writer.CloseWithError(decodeErr)
 			return
@@ -284,6 +286,9 @@ func (s *PlaygroundGatewayService) ForwardNative(
 	startTime := time.Now()
 	resp, err := s.DoGemini(ctx, account, mappedModel, body)
 	if err != nil {
+		if quota := playgroundQuotaFailover(err); quota != nil {
+			return nil, quota
+		}
 		return nil, &UpstreamFailoverError{
 			StatusCode:   http.StatusServiceUnavailable,
 			ResponseBody: []byte(err.Error()),

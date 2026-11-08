@@ -180,6 +180,14 @@ func decodeWireValue(raw json.RawMessage) (any, error) {
 			err := json.Unmarshal(field, &v)
 			return v, err
 		case 3:
+			// JSPB emits protobuf bools either as JSON booleans or integer 0/1.
+			// Keep other numbers and strings invalid rather than coercing truthiness.
+			switch string(bytes.TrimSpace(field)) {
+			case "0":
+				return false, nil
+			case "1":
+				return true, nil
+			}
 			var v bool
 			err := json.Unmarshal(field, &v)
 			return v, err

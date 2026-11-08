@@ -26,6 +26,37 @@ func playgroundResponse(body string) *http.Response {
 func playgroundSuccessResponse() *http.Response {
 	return playgroundFinishedResponse(1)
 }
+
+func TestPlaygroundQuotaHTTPAndTrailerErrorsPersistCooldown(t *testing.T) {
+	for _, status := range []int{http.StatusTooManyRequests, http.StatusOK} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			repo, account := newPlaygroundTestAccount(t)
+			gateway, _ := newPlaygroundTestGateway(t, repo)
+			gateway.generateContent = func(context.Context, *aistudio.Session, string, []byte) (*http.Response, error) {
+				body := `[8,"You've reached your usage limit for this model (resets in 4 hours, 17 minutes)."]`
+				if status == http.StatusOK {
+					body = `[[],` + body + `]`
+				}
+				return &http.Response{StatusCode: status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
+			}
+			resp, err := gateway.DoGemini(context.Background(), account, "flash", []byte(playgroundTestRequest))
+			if status == http.StatusOK {
+				require.NoError(t, err)
+				_, err = io.ReadAll(resp.Body)
+				_ = resp.Body.Close()
+			}
+			var rpc *aistudio.RPCError
+			require.ErrorAs(t, err, &rpc)
+			require.Equal(t, 8, rpc.Code)
+			require.Equal(t, "GenerateContent", rpc.Method)
+			repo.mu.Lock()
+			defer repo.mu.Unlock()
+			require.InDelta(t, (4*time.Hour + 17*time.Minute).Seconds(), repo.account.GetModelRateLimitRemainingTime("flash").Seconds(), 2)
+			require.True(t, repo.account.IsSchedulableForModel("argon"))
+			require.Zero(t, repo.errorsRecorded)
+		})
+	}
+}
 func playgroundFinishedResponse(code int) *http.Response {
 	candidate := []any{[]any{[]any{[]any{nil, "OK"}}, "model"}, code}
 	frame := []any{[]any{candidate}}
