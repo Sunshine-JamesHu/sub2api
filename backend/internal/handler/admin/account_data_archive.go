@@ -216,7 +216,8 @@ func (h *AccountHandler) preparePlaygroundArchiveAccount(ctx context.Context, ac
 	}
 	profile, _ := account.Credentials["playground_profile_id"].(string)
 	email, _ := account.Credentials["playground_email"].(string)
-	token, rollback, err := h.playgroundBrowser.ImportProfile(ctx, archive, profile, email, proxyID)
+	backend, _ := account.Credentials["playground_backend"].(string)
+	token, rollback, err := h.playgroundBrowser.ImportProfile(ctx, archive, profile, email, proxyID, backend)
 	if err != nil {
 		return nil, nil, fmt.Errorf("restore Playground profile: %w", err)
 	}

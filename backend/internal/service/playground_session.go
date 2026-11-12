@@ -16,11 +16,12 @@ import (
 	"time"
 )
 
-var errPlaygroundSessionChanged = errors.New("Playground credentials or proxy changed during the request; retry with the updated account")
 var errPlaygroundSessionBusy = errors.New("Playground browser profile is busy; retry another account")
 var errPlaygroundAuthorizationMissing = fmt.Errorf("%w: this account must be authorized with Camoufox", aistudio.ErrAuthenticationRequired)
 
 const playgroundSessionLeaseWaitTimeout = 2 * time.Second
+
+var errPlaygroundSessionChanged = errors.New("Playground credentials or proxy changed during the request; retry with the updated account")
 
 func playgroundCredentialVersion(credentials map[string]any) string {
 	raw, _ := json.Marshal(credentials)
@@ -28,6 +29,9 @@ func playgroundCredentialVersion(credentials map[string]any) string {
 }
 
 type playgroundActiveSession struct {
+	acquisition                time.Duration
+	firstProof                 bool
+	background                 bool
 	accountID                  int64
 	account                    *Account
 	lease                      *aistudio.SessionLease
@@ -36,7 +40,20 @@ type playgroundActiveSession struct {
 }
 
 func (s *PlaygroundGatewayService) acquireSession(ctx context.Context, account *Account) (*aistudio.Session, func(), error) {
-	started := time.Now()
+	finish := func() {}
+	if s.browser != nil && s.browser.warmup != nil {
+		finish = s.browser.warmup.foreground(account.ID)
+	}
+	session, release, err := s.acquireSessionMode(ctx, account, false)
+	if err != nil {
+		finish()
+		return nil, nil, err
+	}
+	var once sync.Once
+	return session, func() { once.Do(func() { release(); finish() }) }, nil
+}
+func (s *PlaygroundGatewayService) acquireSessionMode(ctx context.Context, account *Account, background bool) (*aistudio.Session, func(), error) {
+	acquireStarted := time.Now()
 	if s.browser == nil || s.browser.Cache == nil {
 		return nil, nil, errors.New("Playground Camoufox/Redis service is unavailable")
 	}
@@ -47,6 +64,9 @@ func (s *PlaygroundGatewayService) acquireSession(ctx context.Context, account *
 	if fresh.Platform != PlatformGemini || fresh.Type != AccountTypePlayground {
 		return nil, nil, errors.New("account is not a Gemini Playground account")
 	}
+	if isGeminiWebPlayground(fresh) != isGeminiWebPlayground(account) {
+		return nil, nil, errPlaygroundSessionChanged
+	}
 	profile := fresh.GetCredential("playground_profile_id")
 	email := fresh.GetCredential("playground_email")
 	if profile == "" || email == "" {
@@ -54,24 +74,27 @@ func (s *PlaygroundGatewayService) acquireSession(ctx context.Context, account *
 		return nil, nil, errPlaygroundAuthorizationMissing
 	}
 	proxy := ""
+	if required, _ := fresh.Credentials["playground_require_proxy"].(bool); required && (fresh.ProxyID == nil || fresh.Proxy == nil || !fresh.Proxy.IsActive() || fresh.Proxy.IsExpired(time.Now())) {
+		return nil, nil, errors.New("此 Playground 账号要求使用有效代理，已停止直连回退")
+	}
 	if fresh.ProxyID != nil {
 		if fresh.Proxy == nil {
 			return nil, nil, errors.New("Playground account proxy is missing")
 		}
 		proxy = fresh.Proxy.URL()
 	}
-	waitStarted := time.Now()
-	// A profile can also be held by account tests or another instance whose
-	// scheduler slot is missing. Bound only lock acquisition, never generation.
-	waitCtx, stopWaiting := context.WithTimeout(ctx, playgroundSessionLeaseWaitTimeout)
-	lease, err := s.browser.Cache.Acquire(waitCtx, profile)
-	stopWaiting()
-	leaseWait := time.Since(waitStarted)
-	if err != nil {
+	var lease *aistudio.SessionLease
+	if background {
+		lease, err = s.browser.Cache.TryAcquire(ctx, profile)
+	} else {
+		waitCtx, stopWaiting := context.WithTimeout(ctx, playgroundSessionLeaseWaitTimeout)
+		lease, err = s.browser.Cache.Acquire(waitCtx, profile)
+		stopWaiting()
 		if ctx.Err() == nil && errors.Is(err, context.DeadlineExceeded) {
-			slog.Info("playground.session_busy", "account_id", fresh.ID, "lease_wait_ms", leaseWait.Milliseconds())
 			return nil, nil, errPlaygroundSessionBusy
 		}
+	}
+	if err != nil {
 		return nil, nil, err
 	}
 	leaseCtx, cancel := context.WithCancel(ctx)
@@ -110,21 +133,23 @@ func (s *PlaygroundGatewayService) acquireSession(ctx context.Context, account *
 		releaseLease()
 		return nil, nil, err
 	}
+	if background && !playgroundWarmupEligible(latest) {
+		releaseLease()
+		return nil, nil, aistudio.ErrSessionBusy
+	}
 	if playgroundCredentialVersion(latest.Credentials) != playgroundCredentialVersion(fresh.Credentials) || !samePlaygroundProxy(latest, fresh) {
 		releaseLease()
 		return nil, nil, errPlaygroundSessionChanged
 	}
 	key := playgroundCacheKey(profile, proxy, email)
-	active := &playgroundActiveSession{accountID: fresh.ID, account: latest, lease: lease, key: key, profile: profile, proxy: proxy, email: email, ctx: leaseCtx}
-	cacheHit := false
+	active := &playgroundActiveSession{accountID: fresh.ID, account: latest, lease: lease, key: key, profile: profile, proxy: proxy, email: email, ctx: leaseCtx, background: background}
 	session, unlock, err := s.waaManager.AcquireFresh(leaseCtx, strconv.FormatInt(account.ID, 10), func() (aistudio.SessionOptions, error) {
 		state, hit, err := lease.Get(leaseCtx, key)
 		if err != nil {
 			return aistudio.SessionOptions{}, err
 		}
-		cacheHit = hit
 		if !hit {
-			state, err = s.recoverPlaygroundSession(leaseCtx, latest, profile, proxy, email, "cache_miss")
+			state, err = s.recoverPlaygroundSession(leaseCtx, latest, profile, proxy, email, "cache_miss", background)
 			if err != nil {
 				if errors.Is(err, camoufox.ErrInteractiveLoginRequired) {
 					_ = lease.RequireLogin(leaseCtx, key)
@@ -151,9 +176,10 @@ func (s *PlaygroundGatewayService) acquireSession(ctx context.Context, account *
 		releaseLease()
 		return nil, nil, err
 	}
+	active.acquisition = time.Since(acquireStarted)
 	s.activeSessions.Store(session, active)
-	slog.Info("playground.session_acquired", "account_id", fresh.ID, "cache_hit", cacheHit, "lease_wait_ms", leaseWait.Milliseconds(), "duration_ms", time.Since(started).Milliseconds())
-	release := func() { s.activeSessions.Delete(session); unlock(); releaseLease() }
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { s.activeSessions.Delete(session); unlock(); releaseLease() }) }
 	return session, release, nil
 }
 func samePlaygroundProxy(a, b *Account) bool {
@@ -177,7 +203,7 @@ func (s *PlaygroundGatewayService) refreshSession(session *aistudio.Session) err
 	if err := active.lease.Delete(active.ctx, active.key); err != nil {
 		return err
 	}
-	state, err := s.recoverPlaygroundSession(active.ctx, active.account, active.profile, active.proxy, active.email, "upstream_authentication")
+	state, err := s.recoverPlaygroundSession(active.ctx, active.account, active.profile, active.proxy, active.email, "upstream_authentication", active.background)
 	if err != nil {
 		if errors.Is(err, camoufox.ErrInteractiveLoginRequired) {
 			_ = active.lease.RequireLogin(active.ctx, active.key)
@@ -188,11 +214,23 @@ func (s *PlaygroundGatewayService) refreshSession(session *aistudio.Session) err
 	return session.ReplaceState(state)
 }
 
-func (s *PlaygroundGatewayService) recoverPlaygroundSession(ctx context.Context, account *Account, profile, proxy, email, trigger string) (aistudio.StorageState, error) {
+func (s *PlaygroundGatewayService) recoverPlaygroundSession(ctx context.Context, account *Account, profile, proxy, email, trigger string, background bool) (aistudio.StorageState, error) {
 	start := time.Now()
 	accountID := account.ID
 	slog.Info("playground.session_recovery_started", "account_id", accountID, "profile_id", profile, "trigger", trigger, "proxy_configured", proxy != "")
-	state, err := s.browser.recover(ctx, profile, proxy, email)
+	recover := s.browser.recover
+	if isGeminiWebPlayground(account) {
+		recover = s.browser.manager.RecoverGemini
+	}
+	if background && !isGeminiWebPlayground(account) && s.browser.recoverWarm != nil {
+		recover = s.browser.recoverWarm
+	}
+	finishRecovery := func() {}
+	if !background && s.browser.warmup != nil {
+		finishRecovery = s.browser.warmup.foregroundRecovery()
+	}
+	state, err := recover(ctx, profile, proxy, email)
+	finishRecovery()
 	if err != nil {
 		slog.Warn("playground.session_recovery_failed", "account_id", accountID, "profile_id", profile, "trigger", trigger, "duration_ms", time.Since(start).Milliseconds(), "requires_login", errors.Is(err, camoufox.ErrInteractiveLoginRequired), "error", err)
 		s.markManualActionFailure(ctx, account, err)
@@ -208,10 +246,21 @@ func (s *PlaygroundGatewayService) rawGenerate(ctx context.Context, session *ais
 	if err != nil {
 		return nil, err
 	}
+	prepareStarted := time.Now()
+	wasReady := session.Ready()
 	proof, err := session.Proof(ctx, model, aistudio.ComputePayloadDigest(aistudio.ExtractPromptForBinding(request)), aistudio.PagePrompt(request))
 	if err != nil {
 		return nil, err
 	}
+	elapsed := time.Since(prepareStarted)
+	if value, ok := s.activeSessions.Load(session); ok {
+		active := value.(*playgroundActiveSession)
+		if !active.firstProof {
+			elapsed += active.acquisition
+			active.firstProof = true
+		}
+	}
+	session.RecordRequestPreparation(elapsed, wasReady)
 	wire, err := aistudio.EncodeGenerateContentRequest(model, request, proof)
 	if err != nil {
 		return nil, err
@@ -220,6 +269,9 @@ func (s *PlaygroundGatewayService) rawGenerate(ctx context.Context, session *ais
 }
 
 func (s *PlaygroundGatewayService) Models(ctx context.Context, account *Account) ([]string, []byte, error) {
+	if isGeminiWebPlayground(account) {
+		return s.geminiWebModels(ctx, account)
+	}
 	session, release, err := s.acquireSession(ctx, account)
 	if err != nil {
 		return nil, nil, err

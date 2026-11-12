@@ -44,6 +44,7 @@
 
 #ifdef _WIN32
 #  include <windows.h>
+#  include <process.h>
 extern "C" __declspec(dllimport) void WINAPI GetCurrentThreadStackLimits(PULONG_PTR low, PULONG_PTR high);
 #else
 #  include <pthread.h>
@@ -578,6 +579,40 @@ static bool ContentSecurityPolicyAllows(JSContext* cx, JS::RuntimeCode kind, JS:
 
 // SecurityCallbacks 是 Trusted Types 与 CSP 的引擎回调
 static const JSSecurityCallbacks SecurityCallbacks = {ContentSecurityPolicyAllows, CodeForEvalGets, nullptr};
+
+// Go's existing OS threads can have only 128 KiB of native stack in static
+// musl builds. ELF stack hints do not resize those threads. Create an owned
+// thread for each VM; it exits after the event loop destroys its JSContext.
+extern "C" void mzGoThread(uintptr_t id);
+#ifdef _WIN32
+static unsigned __stdcall VMThread(void* value) {
+  mzGoThread(reinterpret_cast<uintptr_t>(value));
+  return 0;
+}
+#else
+static void* VMThread(void* value) {
+  mzGoThread(reinterpret_cast<uintptr_t>(value));
+  return nullptr;
+}
+#endif
+extern "C" int mz_start_thread(uintptr_t id) {
+#ifdef _WIN32
+  uintptr_t handle = _beginthreadex(nullptr, 8 * 1024 * 1024, VMThread, reinterpret_cast<void*>(id), 0, nullptr);
+  if (!handle) return -1;
+  CloseHandle(reinterpret_cast<HANDLE>(handle));
+  return 0;
+#else
+  pthread_attr_t attr;
+  int code = pthread_attr_init(&attr);
+  if (code != 0) return code;
+  code = pthread_attr_setstacksize(&attr, 8 * 1024 * 1024);
+  if (code == 0) code = pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+  pthread_t thread;
+  if (code == 0) code = pthread_create(&thread, &attr, VMThread, reinterpret_cast<void*>(id));
+  pthread_attr_destroy(&attr);
+  return code;
+#endif
+}
 
 extern "C" const char* mz_init(void) { return JS_InitWithFailureDiagnostic(); }
 

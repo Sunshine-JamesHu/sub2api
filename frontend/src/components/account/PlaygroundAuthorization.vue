@@ -1,5 +1,13 @@
 <template>
   <section class="space-y-4" :aria-label="t(`${prefix}.authTitle`)">
+    <div>
+      <label :for="sourceId" class="input-label">{{ t(`${prefix}.sourceLabel`) }}</label>
+      <select :id="sourceId" v-model="backend" class="input" :disabled="busy || !!loginId">
+        <option value="aistudio">{{ t(`${prefix}.sourceAIStudio`) }}</option>
+        <option value="gemini_web">{{ t(`${prefix}.sourceGeminiWeb`) }}</option>
+      </select>
+      <p class="input-hint">{{ t(`${prefix}.${backend === 'gemini_web' ? 'geminiWebHint' : 'aiStudioHint'}`) }}</p>
+    </div>
     <div class="rounded-lg border border-gray-200 p-4 dark:border-dark-600">
       <h4 class="font-medium">{{ t(`${prefix}.authTitle`) }}</h4>
       <p class="mt-2 text-sm text-gray-600 dark:text-dark-300">{{ t(`${prefix}.${configured ? 'authConfigured' : 'authNotConfigured'}`) }}</p>
@@ -30,20 +38,22 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, useId, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { startPlaygroundLogin, playgroundLoginFrame, playgroundLoginInput, finishPlaygroundLogin, cancelPlaygroundLogin, type PlaygroundBrowserInput } from '@/api/admin/accounts'
+import { startPlaygroundLogin, playgroundLoginFrame, playgroundLoginInput, finishPlaygroundLogin, cancelPlaygroundLogin, type PlaygroundBrowserInput, type PlaygroundBackend } from '@/api/admin/accounts'
 
 const props = defineProps<{ editing?: boolean; source?: unknown; proxyId?: number | null }>()
 const loginToken = defineModel<string>('loginToken', { default: '' })
+const backend = defineModel<PlaygroundBackend>('backend', { default: 'aistudio' })
 const { t } = useI18n()
 const helpId = useId()
+const sourceId = useId()
 const prefix = 'admin.accounts.gemini.playground'
 const loginId = ref('')
 const frame = ref('')
 const error = ref('')
 const busy = ref(false)
 const capturedEmail = ref('')
-const email = computed(() => capturedEmail.value || (props.source as { email?: string } | undefined)?.email || '')
-const configured = computed(() => !!loginToken.value || (props.source as { browser?: string } | undefined)?.browser === 'camoufox')
+const email = computed(() => capturedEmail.value || (configured.value ? (props.source as { email?: string } | undefined)?.email || '' : ''))
+const configured = computed(() => !!loginToken.value || ((props.source as { browser?: string } | undefined)?.browser === 'camoufox' && ((props.source as { backend?: string } | undefined)?.backend || 'aistudio') === backend.value))
 let timer: ReturnType<typeof setTimeout> | undefined
 let controller: AbortController | undefined
 let disposed = false
@@ -70,7 +80,7 @@ async function start() {
   error.value = ''; busy.value = true; loginToken.value = ''
   const ownController = new AbortController(); controller = ownController
   try {
-    const result = await startPlaygroundLogin(props.proxyId, ownController.signal)
+    const result = await startPlaygroundLogin(props.proxyId, ownController.signal, backend.value)
     if (disposed || ownController.signal.aborted) { await cancelPlaygroundLogin(result.id); return }
     loginId.value = result.id
   } catch (cause) { if (!ownController.signal.aborted) failure(cause) }
@@ -118,5 +128,6 @@ async function finish() {
   finally { if (ticket === generation) busy.value = false }
 }
 watch(() => props.proxyId, () => { loginToken.value = ''; capturedEmail.value = ''; void cancel() })
+watch(backend, () => { loginToken.value = ''; capturedEmail.value = ''; void cancel() })
 onBeforeUnmount(() => { disposed = true; void cancel() })
 </script>

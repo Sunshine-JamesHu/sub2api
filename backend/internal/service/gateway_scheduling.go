@@ -10,10 +10,12 @@ import (
 	"log/slog"
 	mathrand "math/rand"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/aistudio"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
@@ -1683,6 +1685,9 @@ func filterBySoonestReset(accounts []accountWithLoad) []accountWithLoad {
 // selectByLRU 从集合中选择最久未用的账号
 // 如果有多个账号具有相同的最小 LastUsedAt，则随机选择一个
 func selectByLRU(accounts []accountWithLoad, preferOAuth bool) *accountWithLoad {
+	if len(accounts) > 0 && accounts[0].account.Platform == PlatformGemini && accounts[0].account.Type == AccountTypePlayground {
+		accounts = preferReadyPlayground(accounts, aistudio.DefaultWAAManager().Snapshot())
+	}
 	if len(accounts) == 0 {
 		return nil
 	}
@@ -2683,4 +2688,46 @@ func (s *GatewayService) isModelSupportedByAccount(account *Account, requestedMo
 	}
 	// 其他平台使用账户的模型支持检查
 	return account.IsModelSupported(requestedModel)
+}
+
+// Apply only after priority, quotas, exclusions and concurrency filtering.
+// The prewarmer rotates toward least-used cold accounts; within the ready set,
+// use the freshest completion timestamps so stale DB snapshots cannot hot-spot.
+func preferReadyPlayground(accounts []accountWithLoad, snapshot []aistudio.CachedSessionInfo) []accountWithLoad {
+	if len(accounts) == 0 {
+		return accounts
+	}
+	for _, a := range accounts {
+		if isGeminiWebPlayground(a.account) {
+			return accounts
+		}
+		if a.account.Platform != PlatformGemini || a.account.Type != AccountTypePlayground {
+			return accounts
+		}
+	}
+	ready := make(map[int64]aistudio.CachedSessionInfo)
+	for _, entry := range snapshot {
+		if entry.Ready && !entry.Busy {
+			id, err := strconv.ParseInt(entry.AccountID, 10, 64)
+			if err == nil {
+				ready[id] = entry
+			}
+		}
+	}
+	preferred := make([]accountWithLoad, 0, len(accounts))
+	for _, candidate := range accounts {
+		if entry, ok := ready[candidate.account.ID]; ok {
+			copy := *candidate.account
+			if copy.LastUsedAt == nil || entry.LastUsed.After(*copy.LastUsedAt) {
+				last := entry.LastUsed
+				copy.LastUsedAt = &last
+			}
+			candidate.account = &copy
+			preferred = append(preferred, candidate)
+		}
+	}
+	if len(preferred) != 0 {
+		return preferred
+	}
+	return accounts
 }

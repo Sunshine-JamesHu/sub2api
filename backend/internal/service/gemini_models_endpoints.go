@@ -166,6 +166,9 @@ func (s *GeminiMessagesCompatService) ForwardListModels(ctx context.Context, acc
 	if account == nil {
 		return nil, errors.New("account is nil")
 	}
+	if isGeminiWebPlayground(account) {
+		return s.forwardGeminiWebModels(ctx, account, "")
+	}
 	if !account.IsVertexServiceAccount() {
 		return s.forwardGeminiModelsGET(ctx, account, "/v1beta/models")
 	}
@@ -192,6 +195,9 @@ func (s *GeminiMessagesCompatService) ForwardListModels(ctx context.Context, acc
 func (s *GeminiMessagesCompatService) ForwardGetModel(ctx context.Context, account *Account, model string) (*UpstreamHTTPResult, error) {
 	if account == nil {
 		return nil, errors.New("account is nil")
+	}
+	if isGeminiWebPlayground(account) {
+		return s.forwardGeminiWebModels(ctx, account, model)
 	}
 	if !account.IsVertexServiceAccount() {
 		return s.forwardGeminiModelsGET(ctx, account, "/v1beta/models/"+model)

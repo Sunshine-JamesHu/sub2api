@@ -49,6 +49,9 @@ func decodePlaygroundRequest(body []byte) (*antigravity.GeminiRequest, error) {
 
 // DoGemini shares the exact generation path between account tests and all API formats.
 func (s *PlaygroundGatewayService) DoGemini(ctx context.Context, account *Account, model string, body []byte) (*http.Response, error) {
+	if isGeminiWebPlayground(account) {
+		return s.doGeminiWeb(ctx, account, model, body)
+	}
 	started := time.Now()
 	if err := aistudio.CheckRuntime(); err != nil {
 		return nil, err

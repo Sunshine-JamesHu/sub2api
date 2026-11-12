@@ -1615,10 +1615,16 @@ export default {
           apiKeyLink: '获取 API Key',
           quotaLink: '配额说明',
           playgroundTitle: 'Playground（网页会话）',
-          playgroundDesc: 'AI Studio 网页免额度渠道，支持百万上下文与 Thinking 模型。',
-          playgroundNote: '导入 Chrome OAuth 与设备绑定材料，自动维护 Google 网页会话。'
+          playgroundDesc: '通过独立浏览器会话接入 AI Studio 或 Gemini 网页版。',
+          playgroundNote: '选择网页来源，在 Camoufox 中完成 Google 登录后保存账号；按该账号的实际模型权限调用。'
         },
         playground: {
+          sourceLabel: 'Playground 来源',
+          sourceAIStudio: 'Google AI Studio',
+          sourceGeminiWeb: 'Gemini 网页版',
+          aiStudioHint: '登录 aistudio.google.com，使用 AI Studio Playground 模型。',
+          geminiWebHint: '登录 gemini.google.com，保存后同步模型。支持文本、附件和提示词函数调用；上下文和配额以网页版为准。',
+          batchLogin: '批量上号',
           authTitle: "Camoufox 浏览器登录",
           authNextHint: "先填写账号名称、代理和分组，下一步在独立浏览器中登录 Google。",
           authConfigured: "已绑定独立浏览器会话，调用时自动维护登录状态；需要 Google 验证时请重新登录。",
@@ -1626,7 +1632,7 @@ export default {
           authChange: "重新登录",
           browserLogin: "打开登录窗口",
           browserStarting: "正在启动浏览器…",
-          browserHelp: "点击画面后输入，可粘贴文本、滚动，使用 Tab 和 Enter 操作。按 Esc 离开画面。进入 AI Studio 后点击“完成登录”。窗口十分钟后自动关闭。",
+          browserHelp: "点击画面后输入，可粘贴文本、滚动，使用 Tab 和 Enter 操作。按 Esc 离开画面。进入所选来源的网页并完成首次引导后点击“完成登录”。窗口十分钟后自动关闭。",
           browserView: "Google 登录浏览器",
           browserFinish: "完成登录",
           browserReady: "登录已验证，浏览器已关闭。请保存账号。",

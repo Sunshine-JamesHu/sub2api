@@ -45,30 +45,39 @@ type SessionOptions struct {
 	Client   *http.Client
 }
 type Session struct {
-	Version          string
-	client           *http.Client
-	proxyURL         string
-	authUser         int
-	stateMu          sync.Mutex
-	state            StorageState
-	onChange         func(StorageState) (string, error)
-	headers          http.Header
-	profile          waa.Profile
-	pageURL          string
-	pageReady        bool
-	catalog          map[string][]byte
-	vmMu             sync.Mutex
-	vm               *waa.Runtime
-	expires          time.Time
-	interpreterHash  string
-	interpreter      string
-	closed           bool
-	refreshTimer     *time.Timer
-	incidentsTimer   *time.Timer
-	networkError     error
-	epoch            atomic.Uint64
-	pendingChallenge *waa.Challenge
-	challengeTime    time.Time
+	Version              string
+	client               *http.Client
+	proxyURL             string
+	authUser             int
+	stateMu              sync.Mutex
+	state                StorageState
+	onChange             func(StorageState) (string, error)
+	headers              http.Header
+	profile              waa.Profile
+	pageURL              string
+	pageReady            bool
+	catalog              map[string][]byte
+	vmMu                 sync.Mutex
+	vm                   *waa.Runtime
+	expires              time.Time
+	interpreterHash      string
+	interpreter          string
+	closed               bool
+	leaseMu              sync.Mutex
+	leaseScope           *sessionScope
+	readyUntil           atomic.Int64
+	prepareMillis        atomic.Int64
+	resident             atomic.Bool
+	pageLoaded           atomic.Bool
+	networkError         error
+	errorPending         atomic.Bool
+	requestPrepareMillis atomic.Int64
+	requestWarm          atomic.Bool
+	hasRequest           atomic.Bool
+	epoch                atomic.Uint64
+	pendingChallenge     *waa.Challenge
+	challengeTime        time.Time
+	maintenanceAt        time.Time
 }
 
 func ValidateProxy(value string) error {
@@ -129,6 +138,7 @@ func NewSession(options SessionOptions) (*Session, error) {
 	s.headers.Set("User-Agent", ua)
 	language, _ := fingerprint["headers.Accept-Language"].(string)
 	s.headers.Set("Accept-Language", language)
+	s.bindLease(context.Background(), options.OnChange)
 	return s, nil
 }
 
@@ -156,6 +166,7 @@ func (s *Session) rememberNetworkError(err error) {
 		s.stateMu.Lock()
 		defer s.stateMu.Unlock()
 		s.networkError = err
+		s.errorPending.Store(true)
 	}
 }
 func (s *Session) persistLocked() error {
@@ -165,6 +176,7 @@ func (s *Session) persistLocked() error {
 	version, err := s.onChange(s.state)
 	if err != nil {
 		s.networkError = err
+		s.errorPending.Store(true)
 		return err
 	}
 	s.Version = version
@@ -181,12 +193,17 @@ func (s *Session) Commit() error {
 func (s *Session) ReplaceState(state StorageState) error {
 	s.vmMu.Lock()
 	defer s.vmMu.Unlock()
-	s.stopTimers()
+	s.invalidateRuntime()
+	resume := s.pauseCallbacks()
+	defer resume()
 	if s.vm != nil {
 		s.vm.Close()
 		s.vm = nil
 	}
+	s.resident.Store(false)
+	s.readyUntil.Store(0)
 	s.pageReady = false
+	s.pageLoaded.Store(false)
 	s.interpreter = ""
 	s.interpreterHash = ""
 	s.pendingChallenge = nil
@@ -195,6 +212,7 @@ func (s *Session) ReplaceState(state StorageState) error {
 	state.Fingerprint = s.state.Fingerprint
 	s.state = state
 	s.networkError = nil
+	s.errorPending.Store(false)
 	return s.persistLocked()
 }
 func (s *Session) Do(ctx context.Context, method, target string, body []byte, headers http.Header) (*http.Response, error) {
@@ -247,7 +265,9 @@ func (s *Session) Do(ctx context.Context, method, target string, body []byte, he
 	}
 	if values := response.Header.Values("Set-Cookie"); len(values) > 0 {
 		s.stateMu.Lock()
-		if epoch != s.epoch.Load() {
+		if ctx.Err() != nil {
+			err = ctx.Err()
+		} else if epoch != s.epoch.Load() {
 			err = errors.New("AI Studio session was replaced during the request")
 		} else {
 			err = s.state.MergeSetCookieHeaders(values, target, time.Now())
@@ -482,6 +502,7 @@ func (s *Session) EnsurePage(ctx context.Context, model string) error {
 	if err := group.Wait(); err != nil {
 		return err
 	}
+	s.catalog = make(map[string][]byte, len(startup))
 	for index, rpc := range startup {
 		s.catalog[rpc.method] = results[index]
 	}
@@ -513,9 +534,9 @@ func (s *Session) EnsurePage(ctx context.Context, model string) error {
 	}
 
 	s.pageReady = true
-	s.vmMu.Lock()
-	s.scheduleIncidents()
-	s.vmMu.Unlock()
+	s.pageLoaded.Store(true)
+	s.maintenanceAt = time.Now()
+	s.catalog = nil // Startup responses are no longer needed after headers are derived.
 	return nil
 }
 func (s *Session) navigateFrame(ctx context.Context, target string) (bool, error) {
@@ -560,7 +581,7 @@ var runtimeCheckError error
 func CheckRuntime() error {
 	runtimeCheckOnce.Do(func() {
 		done := make(chan error, 1)
-		go func() {
+		startErr := mozjs.StartThread(func() {
 			runtime.LockOSThread()
 			defer runtime.UnlockOSThread()
 			cx, err := mozjs.NewContext(mozjs.Options{HeapBytes: 32 << 20, Locale: "en-US"})
@@ -579,7 +600,11 @@ func CheckRuntime() error {
 				err = errors.New("SpiderMonkey evaluation returned an invalid result")
 			}
 			done <- err
-		}()
+		})
+		if startErr != nil {
+			runtimeCheckError = startErr
+			return
+		}
 		if err := <-done; err != nil {
 			runtimeCheckError = fmt.Errorf("Playground requires a CGO_ENABLED=1 build with SpiderMonkey: %w", err)
 		}
@@ -587,23 +612,68 @@ func CheckRuntime() error {
 	return runtimeCheckError
 }
 
-func (s *Session) Proof(ctx context.Context, model, digest, prompt string) (string, error) {
+// Prepare performs account-specific initialization without generating content or
+// creating a request-bound proof. Callers must hold the account session lease.
+func (s *Session) Prepare(ctx context.Context, model string) error {
 	if err := CheckRuntime(); err != nil {
-		return "", err
+		return err
 	}
 	if err := s.pendingNetworkError(); err != nil {
-		return "", err
+		return err
 	}
+	started := time.Now()
+	cold := !s.Ready()
 	if err := s.EnsurePage(ctx, model); err != nil {
+		return err
+	}
+	s.vmMu.Lock()
+	defer s.vmMu.Unlock()
+	if s.closed {
+		return errors.New("AI Studio session is closed")
+	}
+	if s.vm == nil || !time.Now().Before(s.expires) {
+		if err := s.refreshVM(ctx); err != nil {
+			return err
+		}
+	}
+	if cold {
+		s.prepareMillis.Store(time.Since(started).Milliseconds())
+	}
+	return nil
+}
+
+// Warmup also replaces the old ten-minute HTTP timer. Maintenance runs only
+// while a current Redis lease and persistence context are attached.
+func (s *Session) Warmup(ctx context.Context) error {
+	if err := s.Prepare(ctx, ""); err != nil {
+		return err
+	}
+	if time.Since(s.maintenanceAt) >= 10*time.Minute {
+		if _, err := s.fetchPageRPC(ctx, "ListIncidentsHistory", "[]"); err != nil {
+			return err
+		}
+		s.maintenanceAt = time.Now()
+	}
+	return nil
+}
+
+func (s *Session) isClosed() bool { s.vmMu.Lock(); defer s.vmMu.Unlock(); return s.closed }
+func (s *Session) Ready() bool {
+	return time.Now().UnixNano() < s.readyUntil.Load() && !s.errorPending.Load()
+}
+func (s *Session) PreparationMillis() int64 { return s.prepareMillis.Load() }
+func (s *Session) RecordRequestPreparation(elapsed time.Duration, warm bool) {
+	s.requestPrepareMillis.Store(elapsed.Milliseconds())
+	s.requestWarm.Store(warm)
+	s.hasRequest.Store(true)
+}
+
+func (s *Session) Proof(ctx context.Context, model, digest, prompt string) (string, error) {
+	if err := s.Prepare(ctx, model); err != nil {
 		return "", err
 	}
 	s.vmMu.Lock()
 	defer s.vmMu.Unlock()
-	if s.vm == nil || !time.Now().Before(s.expires) {
-		if err := s.refreshVM(ctx); err != nil {
-			return "", err
-		}
-	}
 	proof, err := s.vm.RunProof(ctx, digest, prompt)
 	if err != nil {
 		return "", err
@@ -721,22 +791,28 @@ func (s *Session) refreshVM(ctx context.Context) error {
 		if s.epoch.Load() != epoch {
 			return false
 		}
-		c, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		ok, err := s.navigateFrame(c, target)
-		if s.epoch.Load() == epoch {
+		c, done, ok := s.callbackContext()
+		if !ok {
+			return false
+		}
+		defer done()
+		loaded, err := s.navigateFrame(c, target)
+		if c.Err() == nil && s.epoch.Load() == epoch {
 			s.rememberNetworkError(err)
 		}
-		return ok
+		return loaded
 	}, LoadImage: func(target string) bool {
 		if s.epoch.Load() != epoch {
 			return false
 		}
-		c, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
+		c, done, ok := s.callbackContext()
+		if !ok {
+			return false
+		}
+		defer done()
 		r, err := s.Do(c, http.MethodGet, target, nil, subresourceHeaders(target, "image/avif,image/webp,image/png,image/*;q=0.8,*/*;q=0.5", "image", "u=5, i"))
 		if err != nil {
-			if s.epoch.Load() == epoch {
+			if c.Err() == nil && s.epoch.Load() == epoch {
 				s.rememberNetworkError(err)
 			}
 			return false
@@ -756,77 +832,43 @@ func (s *Session) refreshVM(ctx context.Context) error {
 		s.vm.Close()
 	}
 	s.vm = runtime
+	s.resident.Store(true)
 	s.interpreterHash = challenge.InterpreterHash
 	s.interpreter = interpreter
 	s.expires = time.Now().Add(waaTTL)
-	s.scheduleRefresh()
+	s.readyUntil.Store(s.expires.UnixNano())
 	return s.pendingNetworkError()
 }
 
-// Timer operations hold vmMu so refresh/close cannot race with an active proof.
-func (s *Session) stopTimers() {
-	s.epoch.Add(1)
-	if s.refreshTimer != nil {
-		s.refreshTimer.Stop()
+// Maintenance is lease-bound: prewarming and real requests refresh an expired
+// VM. No HTTP timer may retain an old request's Redis persistence callback.
+func (s *Session) invalidateRuntime() { s.epoch.Add(1); s.readyUntil.Store(0) }
+
+// Hibernate releases native VM memory but retains cheap page/header state. A
+// later request needs only a fresh WAA challenge/VM, not the full page bootstrap.
+func (s *Session) Hibernate() {
+	s.unbindLease()
+	s.vmMu.Lock()
+	defer s.vmMu.Unlock()
+	s.invalidateRuntime()
+	if s.vm != nil {
+		s.vm.Close()
+		s.vm = nil
 	}
-	if s.incidentsTimer != nil {
-		s.incidentsTimer.Stop()
-	}
-}
-func (s *Session) scheduleRefresh() {
-	epoch := s.epoch.Load()
-	if s.refreshTimer != nil {
-		s.refreshTimer.Stop()
-	}
-	s.refreshTimer = time.AfterFunc(waaTTL, func() {
-		s.vmMu.Lock()
-		defer s.vmMu.Unlock()
-		if s.closed || s.epoch.Load() != epoch {
-			return
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		defer cancel()
-		if err := s.refreshVM(ctx); err != nil {
-			s.rememberNetworkError(err)
-		}
-	})
-}
-func (s *Session) scheduleIncidents() {
-	epoch := s.epoch.Load()
-	if s.incidentsTimer != nil {
-		s.incidentsTimer.Stop()
-	}
-	s.incidentsTimer = time.AfterFunc(10*time.Minute, func() {
-		s.vmMu.Lock()
-		defer s.vmMu.Unlock()
-		if s.closed || s.epoch.Load() != epoch {
-			return
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-		defer cancel()
-		headers, err := s.rpcHeaders(s.headers.Get("X-Goog-Api-Key"))
-		if err == nil {
-			var response *http.Response
-			response, err = s.Do(ctx, http.MethodPost, MakerSuiteRPCBase+"ListIncidentsHistory", []byte("[]"), headers)
-			if err == nil {
-				_, err = io.Copy(io.Discard, io.LimitReader(response.Body, 4<<20))
-				response.Body.Close()
-				if err == nil {
-					err = checkResponse(response, nil)
-				}
-			}
-		}
-		if err != nil {
-			s.rememberNetworkError(err)
-		}
-		s.scheduleIncidents()
-	})
+	s.resident.Store(false)
+	s.pendingChallenge = nil
+	s.interpreter = ""
+	s.interpreterHash = ""
+	s.client.CloseIdleConnections()
 }
 func (s *Session) Close() {
+	s.unbindLease()
 	s.vmMu.Lock()
 	defer s.vmMu.Unlock()
 	s.closed = true
-	s.stopTimers()
+	s.pageLoaded.Store(false)
+	s.resident.Store(false)
+	s.invalidateRuntime()
 	if s.vm != nil {
 		s.vm.Close()
 		s.vm = nil

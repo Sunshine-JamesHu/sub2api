@@ -49,6 +49,9 @@ typedef struct {
 // mz_init 初始化进程内的 SpiderMonkey，失败时返回原因
 const char* mz_init(void);
 
+// Dedicated VM thread with a real native stack, independent of Go/musl defaults.
+int mz_start_thread(uintptr_t id);
+
 // mz_context_new 在当前线程创建 JSContext，id 为 Go 侧的上下文编号
 mz_context* mz_context_new(uintptr_t id, uint32_t heap_bytes, size_t stack_quota, const char* locale);
 

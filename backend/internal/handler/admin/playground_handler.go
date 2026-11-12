@@ -9,6 +9,7 @@ import (
 func (h *AccountHandler) StartPlaygroundLogin(c *gin.Context) {
 	var req struct {
 		ProxyID *int64 `json:"proxy_id"`
+		Backend string `json:"backend"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "Invalid login request")
@@ -18,7 +19,7 @@ func (h *AccountHandler) StartPlaygroundLogin(c *gin.Context) {
 		response.BadRequest(c, "Camoufox login service unavailable")
 		return
 	}
-	id, err := h.playgroundBrowser.Begin(c.Request.Context(), req.ProxyID)
+	id, err := h.playgroundBrowser.BeginBackend(c.Request.Context(), req.ProxyID, req.Backend)
 	if err != nil {
 		response.BadRequest(c, err.Error())
 		return

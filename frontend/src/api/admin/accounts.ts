@@ -1176,8 +1176,9 @@ export async function refreshOpenCodeGoUsage(id: number): Promise<OpenCodeGoUsag
 }
 
 export interface PlaygroundBrowserInput { type: 'click' | 'text' | 'key' | 'scroll'; x?: number; y?: number; text?: string; key?: string; delta_y?: number }
-export async function startPlaygroundLogin(proxyId?: number | null, signal?: AbortSignal): Promise<{ id: string }> {
- const { data } = await apiClient.post('/admin/accounts/playground/login', { proxy_id: proxyId || undefined }, { timeout: 660000, signal }); return data
+export type PlaygroundBackend = 'aistudio' | 'gemini_web'
+export async function startPlaygroundLogin(proxyId?: number | null, signal?: AbortSignal, backend: PlaygroundBackend = 'aistudio'): Promise<{ id: string }> {
+ const { data } = await apiClient.post('/admin/accounts/playground/login', { proxy_id: proxyId || undefined, backend }, { timeout: 660000, signal }); return data
 }
 export async function playgroundLoginFrame(id: string): Promise<{ image: string }> {
  const { data } = await apiClient.get(`/admin/accounts/playground/login/${id}/frame`, { timeout: 25000 }); return data

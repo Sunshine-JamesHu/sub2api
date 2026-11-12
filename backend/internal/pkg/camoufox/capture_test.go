@@ -18,6 +18,7 @@ func TestCaptureAccountControlsAndFailureReasons(t *testing.T) {
 	for _, tc := range []struct {
 		name, origin, pathname, email, identity, expected, cookie, failure string
 		interactive                                                        bool
+		browserOrigin                                                      string
 	}{
 		{name: "account control fallback", origin: aistudio.AIStudioOrigin, email: "selected@example.test", identity: "account-control", cookie: "synthetic"},
 		{name: "page data", origin: aistudio.AIStudioOrigin, email: "selected@example.test", identity: "page-data", cookie: "synthetic", expected: "Selected@example.test"},
@@ -29,6 +30,9 @@ func TestCaptureAccountControlsAndFailureReasons(t *testing.T) {
 		{name: "missing cookie", origin: aistudio.AIStudioOrigin, email: "selected@example.test", failure: "[session-cookie-missing]"},
 		{name: "unsupported region", origin: aistudio.AIStudioOrigin, pathname: "/docs/available-regions", failure: ErrRegionNotSupported.Error()},
 		{name: "unsupported region docs", origin: "https://ai.google.dev", pathname: "/gemini-api/docs/available-regions", failure: ErrRegionNotSupported.Error()},
+		{name: "Gemini Web identity", origin: GeminiOrigin, browserOrigin: GeminiOrigin, email: "selected@example.test", identity: "page-data", cookie: "synthetic"},
+		{name: "Gemini Web refuses AI Studio", origin: aistudio.AIStudioOrigin, browserOrigin: GeminiOrigin, failure: "[not-gemini-web]"},
+		{name: "AI Studio refuses Gemini Web", origin: GeminiOrigin, failure: "[not-ai-studio]"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			page, err := json.Marshal(map[string]any{"origin": tc.origin, "pathname": tc.pathname, "email": tc.email, "identity": tc.identity, "storage": []any{}})
@@ -54,10 +58,14 @@ func TestCaptureAccountControlsAndFailureReasons(t *testing.T) {
 					case "script.evaluate":
 						result = map[string]any{"type": "success", "result": map[string]string{"type": "string", "value": string(page)}}
 					case "storage.getCookies":
+						cookieName := "SAPISID"
+						if tc.browserOrigin == GeminiOrigin {
+							cookieName = "__Secure-1PSID"
+						}
 						if _, filtered := command.Params["partition"]; filtered {
 							t.Error("cookie export must include cross-domain cookies in the isolated profile")
 						}
-						result = map[string]any{"cookies": []any{map[string]any{"name": "SAPISID", "value": map[string]string{"type": "string", "value": tc.cookie}, "domain": ".google.com", "path": "/", "secure": true}}}
+						result = map[string]any{"cookies": []any{map[string]any{"name": cookieName, "value": map[string]string{"type": "string", "value": tc.cookie}, "domain": ".google.com", "path": "/", "secure": true}}}
 					default:
 						return
 					}
@@ -72,7 +80,7 @@ func TestCaptureAccountControlsAndFailureReasons(t *testing.T) {
 			defer conn.Close()
 			fingerprint, err := aistudio.NewBrowserFingerprint()
 			require.NoError(t, err)
-			browser := &Browser{conn: conn, tab: "test-tab", fingerprint: fingerprint}
+			browser := &Browser{origin: tc.browserOrigin, conn: conn, tab: "test-tab", fingerprint: fingerprint}
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			state, email, err := browser.Capture(ctx, tc.expected)
@@ -111,6 +119,7 @@ func checkCaptureIdentityInBrowser(t *testing.T, ctx context.Context, browser *B
 		{"prompt email is not identity", `<p>selected@example.test</p><textarea>selected@example.test</textarea>`, `{}`, "", "missing"},
 		{"prompt account link is not identity", `<a href="https://myaccount.google.com">selected@example.test</a>`, `{}`, "", "missing"},
 		{"chat account control is not identity", `<ms-chat-turn><a role="button" href="https://accounts.google.com/SignOutOptions" aria-label="Google Account: selected@example.test">Account</a></ms-chat-turn>`, `{}`, "", "missing"},
+		{"Gemini answer is not identity", `<model-response><button aria-label="Google Account: selected@example.test">Account</button></model-response>`, `{}`, "", "missing"},
 		{"untrusted link", `<a href="https://accounts.google.com.example.test/SignOutOptions" aria-label="selected@example.test">Account</a>`, `{}`, "", "missing"},
 		{"hidden account", `<button hidden aria-label="Google Account: hidden@example.test">Account</button>`, `{}`, "", "missing"},
 		{"ambiguous accounts", `<button aria-label="Google Account: first@example.test">One</button><button aria-label="Google Account: second@example.test">Two</button>`, `{}`, "", "ambiguous"},

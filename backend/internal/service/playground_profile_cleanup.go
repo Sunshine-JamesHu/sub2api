@@ -95,12 +95,27 @@ func (s *PlaygroundBrowserService) cleanupProfile(ctx context.Context, repo Acco
 	}()
 	// Always verify against committed state (callers must not pass a transaction
 	// context). A failed/rolled-back deletion must preserve the browser profile.
-	_, err = repo.GetByID(leaseCtx, accountID)
-	if err == nil {
-		return nil
-	}
-	if !errors.Is(err, ErrAccountNotFound) {
-		return err
+	if accountID == 0 {
+		// Batch jobs can leave a profile without an account. Recheck all bound
+		// Playground profiles before deleting one, including a late DB commit.
+		accounts, lookupErr := repo.ListAllWithFilters(leaseCtx, PlatformGemini, AccountTypePlayground, "", "", 0, "")
+		if lookupErr != nil {
+			return lookupErr
+		}
+		for _, account := range accounts {
+			if account.GetCredential("playground_profile_id") == profile {
+				_ = os.Remove(path)
+				return nil
+			}
+		}
+	} else {
+		_, err = repo.GetByID(leaseCtx, accountID)
+		if err == nil {
+			return nil
+		}
+		if !errors.Is(err, ErrAccountNotFound) {
+			return err
+		}
 	}
 	if err := aistudio.DefaultWAAManager().CloseCached(leaseCtx, strconv.FormatInt(accountID, 10)); err != nil {
 		return err
@@ -146,7 +161,7 @@ func (s *PlaygroundBrowserService) retryProfileCleanup(ctx context.Context, repo
 			continue
 		}
 		var record playgroundProfileCleanup
-		if json.Unmarshal(raw, &record) != nil || record.AccountID <= 0 {
+		if json.Unmarshal(raw, &record) != nil || record.AccountID < 0 {
 			continue
 		}
 		attemptCtx, cancel := context.WithTimeout(ctx, 15*time.Second)

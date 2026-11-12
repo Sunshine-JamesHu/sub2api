@@ -200,6 +200,18 @@ async function openCodexImportStep(toggleClicks = 0) {
 }
 
 describe('CreateAccountModal OpenAI long-context billing', () => {
+  it('offers batch login only when the account page grants full admin access', async () => {
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'Gemini')
+    await selectButtonByText(wrapper, 'admin.accounts.gemini.accountType.playgroundTitle')
+    const label = 'admin.accounts.gemini.playground.batchLogin'
+    expect(wrapper.findAll('button').some(button => button.text().includes(label))).toBe(false)
+    await wrapper.setProps({ canBatchLogin: true })
+    await selectButtonByText(wrapper, label)
+    expect(wrapper.emitted('batch-login')).toHaveLength(1)
+    wrapper.unmount()
+  })
+
   it('collects a verified Camoufox login grant only after Next', async () => {
     const wrapper = mountModal()
     await selectButtonByText(wrapper, 'Gemini')
@@ -210,12 +222,14 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
     await wrapper.get('form#create-account-form').trigger('submit.prevent')
     expect(createAccountMock).not.toHaveBeenCalled()
     const authorization = wrapper.getComponent({ name: 'PlaygroundAuthorization' })
+    authorization.vm.$emit('update:backend', 'gemini_web')
+    await wrapper.vm.$nextTick()
     authorization.vm.$emit('update:loginToken', 'verified-login-token')
     await wrapper.vm.$nextTick()
     await selectButtonByText(wrapper, 'admin.accounts.oauth.completeAuth')
     await flushPromises()
     expect(createAccountMock.mock.calls[0]?.[0]).toMatchObject({
-      platform: 'gemini', type: 'playground', credentials: { playground_login_token: 'verified-login-token' }
+      platform: 'gemini', type: 'playground', credentials: { playground_login_token: 'verified-login-token', playground_backend: 'gemini_web' }
     })
     expect(createAccountMock.mock.calls[0]?.[0]?.credentials).not.toHaveProperty('cookies')
     wrapper.unmount()

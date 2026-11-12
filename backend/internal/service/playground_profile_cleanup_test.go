@@ -45,6 +45,32 @@ func (r *playgroundDeleteRepository) GetByID(context.Context, int64) (*Account, 
 func (r *playgroundDeleteRepository) ListShadowsByParent(context.Context, int64) ([]*Account, error) {
 	return nil, nil
 }
+
+func (r *playgroundDeleteRepository) ListAllWithFilters(context.Context, string, string, string, string, int64, string) ([]Account, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.getErr != nil {
+		return nil, r.getErr
+	}
+	if r.account == nil {
+		return nil, nil
+	}
+	return []Account{*r.account}, nil
+}
+
+func TestPlaygroundAbandonedBatchCleanupPreservesLateCommittedProfile(t *testing.T) {
+	admin, repo, _, profile, path := playgroundCleanupFixture(t)
+	require.NoError(t, admin.playgroundBrowser.prepareProfileCleanup(profile, 0))
+	require.NoError(t, admin.playgroundBrowser.cleanupProfile(context.Background(), repo, profile, 0))
+	require.DirExists(t, path, "a late database commit owns this profile")
+	marker, err := admin.playgroundBrowser.cleanupPath(profile)
+	require.NoError(t, err)
+	require.NoFileExists(t, marker)
+	repo.account = nil
+	require.NoError(t, admin.playgroundBrowser.prepareProfileCleanup(profile, 0))
+	require.NoError(t, admin.playgroundBrowser.cleanupProfile(context.Background(), repo, profile, 0))
+	require.NoDirExists(t, path)
+}
 func (r *playgroundDeleteRepository) Delete(context.Context, int64) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()

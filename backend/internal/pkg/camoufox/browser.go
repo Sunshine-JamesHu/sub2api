@@ -27,7 +27,7 @@ import (
 
 type Manager struct {
 	Executable, Root string
-	slots            chan struct{}
+	gate             *browserGate
 	mu               sync.Mutex
 	active           map[*Browser]struct{}
 	life             context.Context
@@ -36,7 +36,7 @@ type Manager struct {
 
 func NewManager(executable, root string) *Manager {
 	life, cancel := context.WithCancel(context.Background())
-	return &Manager{Executable: executable, Root: root, slots: make(chan struct{}, 2), active: map[*Browser]struct{}{}, life: life, cancel: cancel}
+	return &Manager{Executable: executable, Root: root, gate: newBrowserGate(), active: map[*Browser]struct{}{}, life: life, cancel: cancel}
 }
 
 type browserProcess struct {
@@ -44,6 +44,7 @@ type browserProcess struct {
 	tree    browserTree
 }
 type Browser struct {
+	origin      string
 	process     *browserProcess
 	done        chan struct{}
 	conn        *websocket.Conn
@@ -86,10 +87,10 @@ func (m *Manager) RemoveProfile(profile string) error {
 }
 
 func (m *Manager) Start(ctx context.Context, profile, proxy string) (_ *Browser, err error) {
-	return m.start(ctx, profile, proxy, aistudio.AIStudioOrigin+"/prompts/new_chat")
+	return m.start(ctx, profile, proxy, 1)
 }
 
-func (m *Manager) start(ctx context.Context, profile, proxy, initialURL string) (_ *Browser, err error) {
+func (m *Manager) start(ctx context.Context, profile, proxy string, priority int, resume ...string) (_ *Browser, err error) {
 	ctx, cancel := context.WithCancel(ctx)
 	stop := context.AfterFunc(m.life, cancel)
 	defer func() {
@@ -107,10 +108,9 @@ func (m *Manager) start(ctx context.Context, profile, proxy, initialURL string) 
 	if err != nil {
 		return nil, err
 	}
-	select {
-	case m.slots <- struct{}{}:
-	case <-ctx.Done():
-		return nil, ctx.Err()
+	release, err := m.gate.acquire(ctx, priority)
+	if err != nil {
+		return nil, err
 	}
 	b := &Browser{done: make(chan struct{})}
 	b.release = func() {
@@ -119,7 +119,7 @@ func (m *Manager) start(ctx context.Context, profile, proxy, initialURL string) 
 		m.mu.Lock()
 		delete(m.active, b)
 		m.mu.Unlock()
-		<-m.slots
+		release()
 	}
 	defer func() {
 		if err != nil {
@@ -168,6 +168,12 @@ func (m *Manager) start(ctx context.Context, profile, proxy, initialURL string) 
 		prefs["network.proxy.socks_version"] = 5
 		prefs["network.proxy.socks_remote_dns"] = true
 		prefs["network.proxy.no_proxies_on"] = "localhost,127.0.0.1"
+		prefs["network.proxy.failover_direct"] = false
+		prefs["media.peerconnection.enabled"] = false
+		prefs["network.http.http3.enable"] = false
+		prefs["network.dns.disablePrefetch"] = true
+		prefs["network.prefetch-next"] = false
+		prefs["network.trr.mode"] = 5
 	}
 	var userJS strings.Builder
 	for k, v := range prefs {
@@ -265,7 +271,17 @@ func (m *Manager) start(ctx context.Context, profile, proxy, initialURL string) 
 	}
 	b.tab = roots.Contexts[0].Context
 	_, _ = b.Command(ctx, "browsingContext.setViewport", map[string]any{"context": b.tab, "viewport": map[string]int{"width": 1100, "height": 780}})
-	if _, err = b.Command(ctx, "browsingContext.navigate", map[string]any{"context": b.tab, "url": initialURL, "wait": "none"}); err != nil {
+	target := aistudio.AIStudioOrigin + "/prompts/new_chat"
+	// Internal callers can select a synthetic page for offline smoke tests.
+	// Untrusted resume URLs are validated at StartManualResume's boundary.
+	if len(resume) > 0 && resume[0] != "" {
+		target = resume[0]
+	}
+	b.origin = aistudio.AIStudioOrigin
+	if parsed, parseErr := url.Parse(target); parseErr == nil && parsed.Hostname() == "gemini.google.com" {
+		b.origin = "https://gemini.google.com"
+	}
+	if _, err = b.Command(ctx, "browsingContext.navigate", map[string]any{"context": b.tab, "url": target, "wait": "none"}); err != nil {
 		var failure *commandError
 		if !errors.As(err, &failure) || !strings.Contains(failure.Detail, "NS_ERROR_ABORT") {
 			return nil, err
@@ -437,8 +453,16 @@ func (b *Browser) Capture(ctx context.Context, expected string) (aistudio.Storag
 	if isUnsupportedRegionPage(page.Origin, page.Pathname) {
 		return state, "", ErrRegionNotSupported
 	}
-	if page.Origin != aistudio.AIStudioOrigin {
-		return state, "", &captureStateError{reason: "not-ai-studio", detail: "finish Google login and open the AI Studio workbench before completing authorization", interactive: isInteractiveLoginPage(page.Origin, page.Pathname)}
+	origin := b.origin
+	if origin == "" {
+		origin = aistudio.AIStudioOrigin
+	}
+	if page.Origin != origin {
+		reason := "not-ai-studio"
+		if origin == GeminiOrigin {
+			reason = "not-gemini-web"
+		}
+		return state, "", &captureStateError{reason: reason, detail: "finish Google login and open the selected Playground website before completing authorization", interactive: isInteractiveLoginPage(page.Origin, page.Pathname)}
 	}
 	if page.Identity == "ambiguous" {
 		return state, "", &captureStateError{reason: "account-ambiguous", detail: "multiple Google accounts are visible; close the account switcher and select the intended AI Studio account"}
@@ -497,8 +521,12 @@ func (b *Browser) Capture(ctx context.Context, expected string) (aistudio.Storag
 		state.Cookies = append(state.Cookies, aistudio.StateCookie{Name: c.Name, Value: c.Value.Value, Domain: c.Domain, Path: c.Path, Expires: expires, HTTPOnly: c.HTTPOnly, Secure: c.Secure, SameSite: sameSite})
 	}
 	state.Origins = []aistudio.StorageOrigin{{Origin: page.Origin, LocalStorage: page.Storage}}
-	if _, ok := state.CookieValue("SAPISID", aistudio.AIStudioReferer, time.Now()); !ok {
-		return state, "", &captureStateError{reason: "session-cookie-missing", detail: "the browser has no valid SAPISID cookie for AI Studio; finish Google login before completing authorization"}
+	cookieName := "SAPISID"
+	if origin == "https://gemini.google.com" {
+		cookieName = "__Secure-1PSID"
+	}
+	if _, ok := state.CookieValue(cookieName, origin+"/", time.Now()); !ok {
+		return state, "", &captureStateError{reason: "session-cookie-missing", detail: "the browser has no valid Google session cookie for the selected Playground; finish login before completing authorization"}
 	}
 	if err = state.SetBrowserFingerprint(b.fingerprint); err != nil {
 		return state, "", err
@@ -541,13 +569,18 @@ func (b *Browser) Close() {
 }
 
 func (m *Manager) Recover(ctx context.Context, profile, proxy, email string) (aistudio.StorageState, error) {
+	return m.recover(ctx, profile, proxy, email, 0)
+}
+func (m *Manager) RecoverWarm(ctx context.Context, profile, proxy, email string) (aistudio.StorageState, error) {
+	return m.recover(ctx, profile, proxy, email, 3)
+}
+func (m *Manager) recover(parent context.Context, profile, proxy, email string, priority int) (aistudio.StorageState, error) {
 	if err := m.requireRecoveryProfile(profile); err != nil {
 		return aistudio.StorageState{}, err
 	}
-	parent := ctx
 	ctx, cancel := context.WithTimeout(parent, 90*time.Second)
 	defer cancel()
-	b, err := m.Start(ctx, profile, proxy)
+	b, err := m.start(ctx, profile, proxy, priority, aistudio.AIStudioOrigin+"/apps")
 	if err != nil {
 		return aistudio.StorageState{}, err
 	}

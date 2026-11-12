@@ -17,6 +17,8 @@
             @create="showCreate = true"
           >
             <template #after>
+              <button v-if="authStore.isAdmin" type="button" class="btn btn-secondary" @click="showPlaygroundBatch = true">{{ t('admin.accounts.gemini.playground.batchLogin') }}</button>
+              <PlaygroundWarmup v-if="authStore.isAdmin" />
               <!-- Auto Refresh Dropdown -->
               <div class="relative" ref="autoRefreshDropdownRef">
                 <button
@@ -263,6 +265,9 @@
                   :plan-type="getAccountPlanType(row)"
                   :privacy-mode="row.extra?.privacy_mode || row.parent_privacy_mode"
                   :subscription-expires-at="row.credentials?.subscription_expires_at || row.parent_subscription_expires_at" />
+                <span v-if="row.platform === 'gemini' && row.type === 'playground'" class="rounded bg-gray-100 px-1.5 py-0.5 text-xs text-gray-600 dark:bg-dark-600 dark:text-dark-300">
+                  {{ t(`admin.accounts.gemini.playground.${row.credentials?.playground_backend === 'gemini_web' ? 'sourceGeminiWeb' : 'sourceAIStudio'}`) }}
+                </span>
                 <span
                   v-if="getAntigravityTierLabel(row)"
                   :class="['inline-block rounded px-1.5 py-0.5 text-[10px] font-medium', getAntigravityTierClass(row)]"
@@ -454,7 +459,8 @@
       </template>
       <template #pagination><Pagination v-if="pagination.total > 0" :page="pagination.page" :total="pagination.total" :page-size="pagination.page_size" @update:page="handlePageChange" @update:pageSize="handlePageSizeChange" /></template>
     </TablePageLayout>
-    <CreateAccountModal :show="showCreate" :proxies="proxies" :groups="groups" @close="showCreate = false" @created="reload" />
+    <CreateAccountModal :show="showCreate" :can-batch-login="authStore.isAdmin" :proxies="proxies" :groups="groups" @close="showCreate = false" @created="reload" @batch-login="showCreate = false; showPlaygroundBatch = true" />
+    <PlaygroundBatchLogin v-if="authStore.isAdmin" :show="showPlaygroundBatch" :groups="groups" @close="showPlaygroundBatch = false" @imported="reload" />
     <EditAccountModal :show="showEdit" :account="edAcc" :proxies="proxies" :groups="groups" @close="showEdit = false" @updated="handleAccountUpdated" />
     <ReAuthAccountModal :show="showReAuth" :account="reAuthAcc" @close="closeReAuthModal" @reauthorized="handleAccountUpdated" />
     <AccountTestModal :show="showTest" :account="testingAcc" @close="closeTestModal" />
@@ -494,6 +500,8 @@ import { ref, reactive, computed, onMounted, onUnmounted, toRaw, watch } from 'v
 import { useIntervalFn } from '@vueuse/core'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
+import PlaygroundBatchLogin from '@/components/account/PlaygroundBatchLogin.vue'
+import PlaygroundWarmup from '@/components/account/PlaygroundWarmup.vue'
 import { useAuthStore } from '@/stores/auth'
 import { adminAPI } from '@/api/admin'
 import { CONCRETE_PLATFORM_OPTIONS } from '@/constants/platforms'
@@ -543,6 +551,7 @@ import type { Account, AccountListItem, AccountPlatform, AccountSchedulerGroupSc
 const { t } = useI18n()
 const appStore = useAppStore()
 const authStore = useAuthStore()
+const showPlaygroundBatch = ref(false)
 
 const proxies = ref<AccountProxy[]>([])
 const groups = ref<AdminGroup[]>([])
@@ -1398,6 +1407,7 @@ watch(accounts, (rows) => {
 
 const isAnyModalOpen = computed(() => {
   return (
+    showPlaygroundBatch.value ||
     showCreate.value ||
     showEdit.value ||
     showSync.value ||

@@ -7,6 +7,8 @@ import (
 	"time"
 )
 
+func StartThread(fn func()) error { go fn(); return nil }
+
 var errCgoRequired = errors.New("spidermonkey (mozjs) requires CGO_ENABLED=1")
 
 type Handle uint32
@@ -70,13 +72,13 @@ type Context struct{}
 
 type Call struct{}
 
-func Init() error                                       { return errCgoRequired }
-func NewContext(options Options) (*Context, error)      { return nil, errCgoRequired }
-func SetCamouLocale(language, region, locale string)    {}
-func Now() float64                                      { return float64(time.Now().UnixMilli()) }
-func (cx *Context) Close()                              {}
-func (cx *Context) Release(handle Handle)               {}
-func (cx *Context) ReleaseValue(value Value)            {}
+func Init() error                                    { return errCgoRequired }
+func NewContext(options Options) (*Context, error)   { return nil, errCgoRequired }
+func SetCamouLocale(language, region, locale string) {}
+func Now() float64                                   { return float64(time.Now().UnixMilli()) }
+func (cx *Context) Close()                           {}
+func (cx *Context) Release(handle Handle)            {}
+func (cx *Context) ReleaseValue(value Value)         {}
 func (cx *Context) NewGlobal(same Handle, timezone string) (Handle, error) {
 	return 0, errCgoRequired
 }
@@ -101,21 +103,21 @@ func (cx *Context) ParseJSON(global Handle, text string) (Value, error) {
 func (cx *Context) NewFunction(global Handle, name string, nargs int, fn NativeFunc) (Handle, error) {
 	return 0, errCgoRequired
 }
-func (cx *Context) InstallHostNatives(target Handle) error   { return errCgoRequired }
-func (cx *Context) InstallWindowNatives(global Handle) error { return errCgoRequired }
-func (cx *Context) RunJobs()                                {}
-func (cx *Context) ClearKeptObjects()                       {}
-func (cx *Context) SetMicrotaskReporter(fn Handle)          {}
-func (cx *Context) FlushRejections(fn Handle) error         { return errCgoRequired }
-func (cx *Context) SetTrustedTypes(registry Handle, block bool) {}
+func (cx *Context) InstallHostNatives(target Handle) error             { return errCgoRequired }
+func (cx *Context) InstallWindowNatives(global Handle) error           { return errCgoRequired }
+func (cx *Context) RunJobs()                                           {}
+func (cx *Context) ClearKeptObjects()                                  {}
+func (cx *Context) SetMicrotaskReporter(fn Handle)                     {}
+func (cx *Context) FlushRejections(fn Handle) error                    { return errCgoRequired }
+func (cx *Context) SetTrustedTypes(registry Handle, block bool)        {}
 func (cx *Context) SetThrowLocation(filename string, line, column int) {}
-func (cx *Context) Interrupt()                              {}
-func (cx *Context) GC()                                     {}
-func (cx *Context) ShrinkGC()                               {}
+func (cx *Context) Interrupt()                                         {}
+func (cx *Context) GC()                                                {}
+func (cx *Context) ShrinkGC()                                          {}
 
-func (call *Call) Arg(index int) Value             { return Undefined() }
-func (call *Call) ArgString(index int) string      { return "" }
-func (call *Call) ArgNumber(index int) float64     { return 0 }
+func (call *Call) Arg(index int) Value               { return Undefined() }
+func (call *Call) ArgString(index int) string        { return "" }
+func (call *Call) ArgNumber(index int) float64       { return 0 }
 func (call *Call) ArgBytes(index int) ([]byte, bool) { return nil, false }
-func (call *Call) Return(value Value)              {}
-func (call *Call) ReturnBytes(data []byte)         {}
+func (call *Call) Return(value Value)                {}
+func (call *Call) ReturnBytes(data []byte)           {}

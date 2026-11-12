@@ -1,6 +1,7 @@
 package waa
 
 import (
+	"github.com/Wei-Shaw/sub2api/internal/pkg/aistudio/waa/mozjs"
 	"runtime"
 	"sync"
 	"time"
@@ -19,10 +20,12 @@ type eventLoop struct {
 	cleanup   func()
 }
 
-func newEventLoop() *eventLoop {
+func newEventLoop() (*eventLoop, error) {
 	loop := &eventLoop{wake: make(chan struct{}, 1), done: make(chan struct{}), exited: make(chan struct{}), timers: make(map[*time.Timer]struct{})}
-	go loop.run()
-	return loop
+	if err := mozjs.StartThread(loop.run); err != nil {
+		return nil, err
+	}
+	return loop, nil
 }
 
 func (loop *eventLoop) run() {

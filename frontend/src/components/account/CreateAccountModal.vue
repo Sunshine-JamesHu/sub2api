@@ -1421,6 +1421,7 @@
       <!-- Playground authorization is collected after the basic configuration. -->
       <div v-if="form.platform === 'gemini' && accountCategory === 'playground'" class="space-y-4">
         <p class="input-hint">{{ t('admin.accounts.gemini.playground.authNextHint') }}</p>
+        <button v-if="canBatchLogin" type="button" class="btn btn-secondary" @click="emit('batch-login')">{{ t('admin.accounts.gemini.playground.batchLogin') }}</button>
       </div>
 
       <!-- Antigravity model restriction (applies to OAuth + Upstream) -->
@@ -3817,6 +3818,7 @@
       <PlaygroundAuthorization
         v-if="isPlaygroundFlow"
         v-model:login-token="playgroundLoginToken"
+        v-model:backend="playgroundBackend"
         :proxy-id="form.proxy_id"
       />
       <OAuthAuthorizationFlow
@@ -4382,6 +4384,7 @@ const apiKeyValuePlaceholder = computed(() => {
 
 interface Props {
   show: boolean
+  canBatchLogin?: boolean
   proxies: Proxy[]
   groups: AdminGroup[]
 }
@@ -4390,6 +4393,7 @@ const props = defineProps<Props>()
 const emit = defineEmits<{
   close: []
   created: []
+  'batch-login': []
 }>()
 
 const appStore = useAppStore()
@@ -4844,7 +4848,8 @@ const vertexServiceAccountDragActive = ref(false)
 const vertexAuthMode = ref<'service_account' | 'apikey'>('service_account')
 const vertexApiKey = ref('')
 const playgroundLoginToken = ref('')
-watch(() => props.show, () => { playgroundLoginToken.value = '' })
+const playgroundBackend = ref<'aistudio' | 'gemini_web'>('aistudio')
+watch(() => props.show, () => { playgroundLoginToken.value = ''; playgroundBackend.value = 'aistudio' })
 const handleSelectGeminiPlayground = () => {
   accountCategory.value = 'playground'
   form.type = 'playground' as AccountType
@@ -6200,7 +6205,7 @@ const handleSubmit = async () => {
       appStore.showError(t('admin.accounts.gemini.playground.loginRequired'))
       return
     }
-    const credentials: Record<string, unknown> = { playground_login_token: playgroundLoginToken.value }
+    const credentials: Record<string, unknown> = { playground_login_token: playgroundLoginToken.value, playground_backend: playgroundBackend.value }
     const modelMapping = buildModelMappingObject(
       modelRestrictionMode.value, allowedModels.value, modelMappings.value
     )

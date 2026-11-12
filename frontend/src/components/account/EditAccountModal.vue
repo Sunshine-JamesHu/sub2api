@@ -1574,6 +1574,7 @@
           :key="`${account.id}-${show}`"
           editing
           v-model:login-token="playgroundLoginToken"
+          v-model:backend="playgroundBackend"
         :proxy-id="form.proxy_id"
           :source="account.credentials?.playground_auth_source"
         />
@@ -3845,6 +3846,7 @@ const editVertexClientEmail = ref('')
 const editVertexLocation = ref('us-central1')
 const editVertexApiKey = ref('')
 const playgroundLoginToken = ref('')
+const playgroundBackend = ref<'aistudio' | 'gemini_web'>('aistudio')
 const isVertexAPIKeyMode = computed(() =>
   props.account?.platform === 'gemini' &&
   props.account?.type === 'service_account' &&
@@ -5019,6 +5021,7 @@ const syncFormFromAccount = (newAccount: Account | null) => {
     const credentials = newAccount.credentials as Record<string, unknown>
     editBaseUrl.value = (credentials.base_url as string) || ''
   } else if (newAccount.platform === 'gemini' && newAccount.type === 'playground' && newAccount.credentials) {
+    playgroundBackend.value = newAccount.credentials.playground_backend === 'gemini_web' ? 'gemini_web' : 'aistudio'
     const credentials = newAccount.credentials as Record<string, unknown>
     playgroundLoginToken.value = ''
     loadModelRestrictionFromMapping(credentials.model_mapping as Record<string, unknown> | undefined)
@@ -5932,6 +5935,7 @@ const handleSubmit = async () => {
     } else if (props.account.platform === 'gemini' && props.account.type === 'playground') {
       const currentCredentials = (props.account.credentials as Record<string, unknown>) || {}
       const newCredentials: Record<string, unknown> = { ...currentCredentials }
+      newCredentials.playground_backend = playgroundBackend.value
       if (playgroundLoginToken.value) { newCredentials.playground_login_token = playgroundLoginToken.value }
       const modelMapping = buildModelRestrictionMapping()
       if (modelMapping) {

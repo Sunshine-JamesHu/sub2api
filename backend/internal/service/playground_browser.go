@@ -21,10 +21,14 @@ type PlaygroundBrowserService struct {
 	jobs    map[string]*playgroundLoginJob
 	// recover is replaceable for tests; production always uses the profile browser.
 	recover       func(context.Context, string, string, string) (aistudio.StorageState, error)
+	recoverWarm   func(context.Context, string, string, string) (aistudio.StorageState, error)
+	warmup        *PlaygroundWarmupService
 	cleanupCancel context.CancelFunc
 	cleanupDone   chan struct{}
+	batchClose    func()
 }
 type playgroundLoginJob struct {
+	backend        string
 	mu             sync.Mutex
 	completed      bool
 	browser        *camoufox.Browser
@@ -43,7 +47,7 @@ func NewPlaygroundBrowserService(cache *aistudio.SessionCache, proxies ProxyRepo
 		root = filepath.Join(base, "aistudio", "profiles")
 	}
 	manager := camoufox.NewManager(os.Getenv("CAMOUFOX_PATH"), root)
-	return &PlaygroundBrowserService{Cache: cache, manager: manager, proxies: proxies, jobs: map[string]*playgroundLoginJob{}, recover: manager.Recover}
+	return &PlaygroundBrowserService{Cache: cache, manager: manager, proxies: proxies, jobs: map[string]*playgroundLoginJob{}, recover: manager.Recover, recoverWarm: manager.RecoverWarm}
 }
 func (s *PlaygroundBrowserService) proxyURL(ctx context.Context, id *int64) (string, error) {
 	if id == nil || *id == 0 {
@@ -59,6 +63,13 @@ func (s *PlaygroundBrowserService) proxyURL(ctx context.Context, id *int64) (str
 	return proxy.URL(), nil
 }
 func (s *PlaygroundBrowserService) Begin(ctx context.Context, proxyID *int64) (string, error) {
+	return s.BeginBackend(ctx, proxyID, "aistudio")
+}
+func (s *PlaygroundBrowserService) BeginBackend(ctx context.Context, proxyID *int64, backend string) (string, error) {
+	backend, err := normalizePlaygroundBackend(backend)
+	if err != nil {
+		return "", err
+	}
 	proxy, err := s.proxyURL(ctx, proxyID)
 	if err != nil {
 		return "", err
@@ -67,7 +78,11 @@ func (s *PlaygroundBrowserService) Begin(ctx context.Context, proxyID *int64) (s
 	life, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	// Cancel startup when the HTTP caller disappears, then transfer lifetime to the job.
 	stop := context.AfterFunc(ctx, cancel)
-	browser, err := s.manager.Start(life, profile, proxy)
+	start := s.manager.Start
+	if backend == "gemini_web" {
+		start = s.manager.StartGemini
+	}
+	browser, err := start(life, profile, proxy)
 	stopped := stop()
 	if err != nil || !stopped {
 		cancel()
@@ -79,7 +94,7 @@ func (s *PlaygroundBrowserService) Begin(ctx context.Context, proxyID *int64) (s
 		}
 		return "", ctx.Err()
 	}
-	job := &playgroundLoginJob{browser: browser, profile: profile, proxy: proxy, expires: time.Now().Add(10 * time.Minute), cancel: cancel}
+	job := &playgroundLoginJob{backend: backend, browser: browser, profile: profile, proxy: proxy, expires: time.Now().Add(10 * time.Minute), cancel: cancel}
 	s.mu.Lock()
 	s.jobs[profile] = job
 	s.mu.Unlock()
@@ -140,7 +155,7 @@ func (s *PlaygroundBrowserService) Finish(ctx context.Context, id string) (strin
 		job.mu.Unlock()
 		return "", "", err
 	}
-	token, err := s.Cache.IssueGrant(ctx, aistudio.BrowserGrant{Profile: job.profile, Email: email, Proxy: aistudio.ComputePayloadDigest(job.proxy)})
+	token, err := s.Cache.IssueGrant(ctx, aistudio.BrowserGrant{Profile: job.profile, Email: email, Proxy: aistudio.ComputePayloadDigest(job.proxy), Backend: job.backend})
 	if err == nil {
 		job.completed = true
 	}
@@ -164,6 +179,12 @@ func (s *PlaygroundBrowserService) Cancel(id string) {
 }
 
 func (s *PlaygroundBrowserService) Close() {
+	if s.warmup != nil {
+		s.warmup.Close()
+	}
+	if s.batchClose != nil {
+		s.batchClose()
+	}
 	if s.cleanupCancel != nil {
 		s.cleanupCancel()
 		<-s.cleanupDone
@@ -179,6 +200,8 @@ func (s *PlaygroundBrowserService) Close() {
 		s.Cancel(id)
 	}
 }
+
+func (s *PlaygroundBrowserService) SetBatchCloser(close func()) { s.batchClose = close }
 func playgroundCacheKey(profile, proxy, email string) string {
 	return "playground:{" + profile + "}:session:" + aistudio.ComputePayloadDigest(proxy+"\n"+email)
 }

@@ -1519,10 +1519,16 @@ export default {
           apiKeyLink: 'Get API Key',
           quotaLink: 'Quota guide',
           playgroundTitle: 'Playground (Web Session)',
-          playgroundDesc: 'AI Studio Playground with isolated Camoufox login and automatic session recovery.',
-          playgroundNote: 'Import Chrome OAuth and device binding materials to maintain the Google web session.'
+          playgroundDesc: 'Connect AI Studio or Gemini Web through an isolated browser session.',
+          playgroundNote: 'Choose a website, complete Google login in Camoufox, then save. Model access follows the account permissions.'
         },
         playground: {
+          sourceLabel: 'Playground source',
+          sourceAIStudio: 'Google AI Studio',
+          sourceGeminiWeb: 'Gemini Web',
+          aiStudioHint: 'Sign in at aistudio.google.com to use AI Studio Playground models.',
+          geminiWebHint: 'Sign in at gemini.google.com, save, then sync models. Supports text, attachments and prompted function calls; website context and quota limits apply.',
+          batchLogin: 'Batch sign-in',
           authTitle: "Camoufox browser login",
           authNextHint: "Enter the account name, proxy and groups, then sign in to Google in an isolated browser.",
           authConfigured: "An isolated browser session is linked. Sessions recover automatically when possible; sign in again if Google requests verification.",
@@ -1530,7 +1536,7 @@ export default {
           authChange: "Sign in again",
           browserLogin: "Open login window",
           browserStarting: "Starting browser…",
-          browserHelp: "Click the view to type, paste, scroll, or use Tab and Enter. Press Esc to leave the view. Once AI Studio opens, select Finish login. The window closes automatically after ten minutes.",
+          browserHelp: "Click the view to type, paste, scroll, or use Tab and Enter. Press Esc to leave the view. Open the selected website, complete any onboarding, then select Finish login. The window closes automatically after ten minutes.",
           browserView: "Google sign-in browser",
           browserFinish: "Finish login",
           browserReady: "Login verified and browser closed. Save the account to continue.",

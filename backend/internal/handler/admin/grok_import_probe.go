@@ -232,5 +232,11 @@ func ProvideAccountHandler(
 	handler.grokImportProber = grokQuotaService
 	handler.cfg = cfg
 	handler.playgroundBrowser = playgroundBrowser
+	if batch, err := service.NewPlaygroundBatchService(playgroundBrowser, adminService, cfg); err == nil {
+		handler.playgroundBatch = batch
+		playgroundBrowser.SetBatchCloser(batch.Close)
+	} else {
+		slog.Warn("playground_batch_unavailable", "reason", "batch store or encryption configuration unavailable")
+	}
 	return handler
 }

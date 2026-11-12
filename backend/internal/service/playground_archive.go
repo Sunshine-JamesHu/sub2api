@@ -54,7 +54,14 @@ func (s *PlaygroundBrowserService) ExportProfile(ctx context.Context, writer *zi
 
 // ImportProfile creates a new durable profile and uses the normal one-time grant
 // path to authorize account creation. The rollback is only for failed creation.
-func (s *PlaygroundBrowserService) ImportProfile(ctx context.Context, archive *zip.Reader, source, email string, proxyID *int64) (token string, rollback func(), err error) {
+func (s *PlaygroundBrowserService) ImportProfile(ctx context.Context, archive *zip.Reader, source, email string, proxyID *int64, backends ...string) (token string, rollback func(), err error) {
+	backend := "aistudio"
+	if len(backends) > 0 {
+		backend, err = normalizePlaygroundBackend(backends[0])
+		if err != nil {
+			return "", nil, err
+		}
+	}
 	if s == nil || s.manager == nil || s.Cache == nil {
 		return "", nil, errors.New("Playground browser service is unavailable")
 	}
@@ -69,7 +76,7 @@ func (s *PlaygroundBrowserService) ImportProfile(ctx context.Context, archive *z
 	if err != nil {
 		return "", nil, err
 	}
-	token, err = s.Cache.IssueGrant(ctx, aistudio.BrowserGrant{Profile: profile, Email: email, Proxy: aistudio.ComputePayloadDigest(proxy)})
+	token, err = s.Cache.IssueGrant(ctx, aistudio.BrowserGrant{Profile: profile, Email: email, Proxy: aistudio.ComputePayloadDigest(proxy), Backend: backend})
 	if err != nil {
 		_ = s.manager.RemoveProfile(profile)
 		return "", nil, err

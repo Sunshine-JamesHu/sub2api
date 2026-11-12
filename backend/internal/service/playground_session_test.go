@@ -190,6 +190,46 @@ func TestPlaygroundBusyProfileHasBoundedWaitWithoutInvalidatingAccount(t *testin
 	require.NoError(t, gateway.sessionContext(session).Err(), "acquisition timeout must not become generation timeout")
 }
 
+func TestPlaygroundBackgroundBusyProfileDoesNotWait(t *testing.T) {
+	repo, account := newPlaygroundTestAccount(t)
+	gateway, _ := newPlaygroundTestGateway(t, repo)
+	owner, err := gateway.browser.Cache.Acquire(context.Background(), account.GetCredential("playground_profile_id"))
+	require.NoError(t, err)
+	defer owner.Release(context.Background())
+	started := time.Now()
+	_, _, err = gateway.acquireSessionMode(context.Background(), account, true)
+	require.ErrorIs(t, err, aistudio.ErrSessionBusy)
+	require.Less(t, time.Since(started), time.Second)
+	require.NoError(t, owner.Renew(context.Background()))
+	require.Zero(t, repo.errorsRecorded)
+}
+
+func TestPlaygroundRequiredProxyNeverFallsBackToDirect(t *testing.T) {
+	for _, kind := range []string{"removed", "disabled", "expired"} {
+		t.Run(kind, func(t *testing.T) {
+			repo, account := newPlaygroundTestAccount(t)
+			account.Credentials["playground_require_proxy"] = true
+			if kind != "removed" {
+				id := int64(1)
+				account.ProxyID = &id
+				account.Proxy = &Proxy{ID: id, Protocol: "http", Host: "127.0.0.1", Port: 1, Status: StatusActive}
+				if kind == "disabled" {
+					account.Proxy.Status = "inactive"
+				} else {
+					expired := time.Now().Add(-time.Minute)
+					account.Proxy.ExpiresAt = &expired
+				}
+			}
+			repo.account = *account
+			gateway, _ := newPlaygroundTestGateway(t, repo)
+			_, _, err := gateway.acquireSession(context.Background(), account)
+			require.ErrorContains(t, err, "代理")
+			require.Empty(t, gateway.waaManager.Snapshot())
+			require.Zero(t, repo.errorsRecorded)
+		})
+	}
+}
+
 func TestPlaygroundBusyProfilePreservesRequestCancellation(t *testing.T) {
 	repo, account := newPlaygroundTestAccount(t)
 	gateway, _ := newPlaygroundTestGateway(t, repo)

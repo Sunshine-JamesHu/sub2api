@@ -136,7 +136,7 @@ func NewContext(options Options) (*Context, error) {
 	}
 	quota := int(C.mz_thread_stack_size()) - stackSlack
 	if quota < 512<<10 {
-		quota = 512 << 10
+		return nil, fmt.Errorf("SpiderMonkey requires a larger native thread stack: available=%d; use the dedicated VM owner thread", int(C.mz_thread_stack_size()))
 	}
 	id := nextID.Add(1)
 	locale := C.CString(options.Locale)
@@ -465,4 +465,27 @@ func mzGoNative(id C.uintptr_t, native C.int32_t, raw *C.mz_call) C.bool {
 		return false
 	}
 	return true
+}
+
+var threadCallbacks sync.Map
+var nextThreadID atomic.Uintptr
+
+// StartThread runs a VM owner on an explicitly sized native stack. Callers
+// signal their own readiness and wait for their loop's cleanup before reuse.
+func StartThread(fn func()) error {
+	id := nextThreadID.Add(1)
+	threadCallbacks.Store(id, fn)
+	if code := C.mz_start_thread(C.uintptr_t(id)); code != 0 {
+		threadCallbacks.Delete(id)
+		return fmt.Errorf("cannot create SpiderMonkey owner thread: %d", code)
+	}
+	return nil
+}
+
+//export mzGoThread
+func mzGoThread(id C.uintptr_t) {
+	fn, ok := threadCallbacks.LoadAndDelete(uintptr(id))
+	if ok {
+		fn.(func())()
+	}
 }

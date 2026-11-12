@@ -1849,7 +1849,7 @@ func (s *AccountTestService) fetchGeminiPlaygroundUpstreamModels(ctx context.Con
 	models, body, err := s.playgroundGatewayService.Models(ctx, account)
 	if err != nil {
 		if errors.Is(err, aistudio.ErrAuthenticationRequired) {
-			return nil, nil, newUpstreamModelSyncConfigError("AI Studio session requires authentication; open Camoufox login in the account settings before syncing models", err)
+			return nil, nil, newUpstreamModelSyncConfigError("Playground session requires authentication; open Camoufox login in the account settings before syncing models", err)
 		}
 		var rpcErr *aistudio.RPCError
 		if errors.As(err, &rpcErr) && rpcErr.RegionNotSupported() {

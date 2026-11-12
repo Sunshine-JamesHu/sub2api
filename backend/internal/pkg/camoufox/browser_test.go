@@ -58,7 +58,7 @@ func TestBrowserPersistentProfileSmoke(t *testing.T) {
 	require.NoError(t, err)
 	manager := NewManager(executable, t.TempDir())
 	id := uuid.NewString()
-	browser, err := manager.start(ctx, id, "", "data:text/html,<input id='smoke'>")
+	browser, err := manager.start(ctx, id, "", 1, "data:text/html,<input id='smoke'>")
 	var failure *commandError
 	if errors.As(err, &failure) {
 		t.Log(failure.Detail)
@@ -85,7 +85,7 @@ func TestBrowserPersistentProfileSmoke(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("browser did not exit")
 	}
-	reopened, err := manager.start(ctx, id, "", "data:text/html,profile-reopen")
+	reopened, err := manager.start(ctx, id, "", 1, "data:text/html,profile-reopen")
 	require.NoError(t, err)
 	defer reopened.Close()
 	raw, err := reopened.Command(ctx, "storage.getCookies", map[string]any{})

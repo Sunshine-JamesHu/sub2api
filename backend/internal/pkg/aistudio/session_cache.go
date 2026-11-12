@@ -15,6 +15,8 @@ import (
 const SessionCacheTTL = 30 * time.Minute
 const sessionLeaseTTL = 30 * time.Second
 
+var ErrSessionBusy = errors.New("Playground account is busy")
+
 var ErrSessionLeaseLost = errors.New("Playground session lease lost; retry the request")
 
 // SessionCache deliberately has no in-memory or database fallback. Redis is the
@@ -37,6 +39,7 @@ type BrowserGrant struct {
 	Profile string `json:"profile"`
 	Email   string `json:"email"`
 	Proxy   string `json:"proxy"`
+	Backend string `json:"backend,omitempty"`
 }
 
 func (c *SessionCache) IssueGrant(ctx context.Context, g BrowserGrant) (string, error) {
@@ -64,6 +67,19 @@ func (c *SessionCache) ConsumeGrant(ctx context.Context, token string) (BrowserG
 type SessionLease struct {
 	cache      *SessionCache
 	key, owner string
+}
+
+// TryAcquire is for speculative prewarming: never queue behind real traffic.
+func (c *SessionCache) TryAcquire(ctx context.Context, profile string) (*SessionLease, error) {
+	l := &SessionLease{cache: c, key: "playground:{" + profile + "}:lease", owner: uuid.NewString()}
+	ok, err := c.Client.SetNX(ctx, l.key, l.owner, sessionLeaseTTL).Result()
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, ErrSessionBusy
+	}
+	return l, nil
 }
 
 func (c *SessionCache) Acquire(ctx context.Context, profile string) (*SessionLease, error) {

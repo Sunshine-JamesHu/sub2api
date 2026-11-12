@@ -13,7 +13,7 @@
     // Account controls are usable even when WIZ_global_data does not expose
     // the email. Never scan body text: prompts and model replies contain emails.
     for (const element of document.querySelectorAll('a[href], button[aria-label], [role="button"][aria-label]')) {
-      if (element.closest('ms-chat-turn, ms-prompt-box, ms-markdown-renderer, textarea, [contenteditable="true"]')) continue;
+      if (element.closest('ms-chat-turn, ms-prompt-box, ms-markdown-renderer, model-response, user-query, message-content, rich-textarea, textarea, [contenteditable="true"]')) continue;
       if (!element.checkVisibility({visibilityProperty: true})) continue;
       const label = element.getAttribute('aria-label') || '';
       let accountLink = false;

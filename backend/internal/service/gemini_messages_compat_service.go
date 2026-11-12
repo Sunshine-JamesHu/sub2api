@@ -554,7 +554,7 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 
 	originalModel := req.Model
 	mappedModel := req.Model
-	if account.Type == AccountTypeAPIKey || account.Type == AccountTypeServiceAccount {
+	if account.Type == AccountTypeAPIKey || account.Type == AccountTypeServiceAccount || isGeminiWebPlayground(account) {
 		mappedModel = account.GetMappedModel(req.Model)
 	}
 
@@ -1143,7 +1143,7 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 	body = ensureGeminiFunctionCallThoughtSignatures(body)
 
 	mappedModel := originalModel
-	if account.Type == AccountTypeAPIKey || account.Type == AccountTypeServiceAccount {
+	if account.Type == AccountTypeAPIKey || account.Type == AccountTypeServiceAccount || isGeminiWebPlayground(account) {
 		mappedModel = account.GetMappedModel(originalModel)
 	}
 	if action != "countTokens" && geminiImageGenerationDenied(c, body, originalModel, mappedModel) {
@@ -1163,6 +1163,10 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 		upstreamAction = "streamGenerateContent"
 	}
 	forceAIStudio := action == "countTokens"
+	if isGeminiWebPlayground(account) && action == "countTokens" {
+		c.JSON(http.StatusOK, map[string]any{"totalTokens": estimateGeminiCountTokens(body)})
+		return &ForwardResult{Model: originalModel, UpstreamModel: mappedModel, Usage: ClaudeUsage{}, Duration: time.Since(startTime)}, nil
+	}
 
 	var requestIDHeader string
 	var buildReq func(ctx context.Context) (*http.Request, string, error)

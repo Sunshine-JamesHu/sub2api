@@ -49,6 +49,7 @@ func NewOAuthHandler(oauthService *service.OAuthService) *OAuthHandler {
 // AccountHandler handles admin account management
 type AccountHandler struct {
 	playgroundBrowser       *service.PlaygroundBrowserService
+	playgroundBatch         *service.PlaygroundBatchService
 	claudeResetCredits      claudeResetReader
 	adminService            service.AdminService
 	oauthService            *service.OAuthService
@@ -2869,6 +2870,30 @@ func (h *AccountHandler) respondAvailableModels(c *gin.Context, account *service
 
 	// Handle Gemini accounts
 	if account.IsGemini() {
+		if account.Type == service.AccountTypePlayground && account.GetCredential("playground_backend") == "gemini_web" {
+			if h.accountTestService == nil {
+				response.BadRequest(c, "Playground service unavailable")
+				return
+			}
+			ids, err := h.accountTestService.FetchUpstreamSupportedModels(c.Request.Context(), account)
+			if err != nil {
+				response.BadRequest(c, err.Error())
+				return
+			}
+			models := make([]geminicli.Model, 0, len(ids))
+			mapping := account.GetModelMapping()
+			if len(mapping) > 0 {
+				for requested := range mapping {
+					models = append(models, geminicli.Model{ID: requested, Type: "model", DisplayName: requested})
+				}
+			} else {
+				for _, id := range ids {
+					models = append(models, geminicli.Model{ID: id, Type: "model", DisplayName: id})
+				}
+			}
+			response.Success(c, models)
+			return
+		}
 		// Consumer Google One OAuth still uses the legacy Gemini CLI / Code
 		// Assist channel. Do not advertise newer 3.x or image models that the
 		// channel cannot serve.

@@ -106,7 +106,10 @@ func newRuntime(ctx context.Context, options Options, prelude string) (*Runtime,
 	if err != nil {
 		return nil, err
 	}
-	loop := newEventLoop()
+	loop, err := newEventLoop()
+	if err != nil {
+		return nil, err
+	}
 	runtime := &Runtime{loop: loop, results: make(map[float64]func(string))}
 	ready := make(chan error, 1)
 	var readyOnce sync.Once

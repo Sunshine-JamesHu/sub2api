@@ -72,7 +72,11 @@ RUN apk add --no-cache git ca-certificates tzdata curl xz && \
     | tar -xJ --strip-components=1 -C /opt/zig && \
     mkdir -p /opt/spidermonkey && \
     curl -fsSL --retry 3 https://github.com/Mag1cFall/firefox/releases/download/${SPIDERMONKEY_VER}/spidermonkey-${SPIDERMONKEY_VER}-linux-${TARGETARCH:-amd64}.tar.gz \
-    | tar -xz -C /opt/spidermonkey
+    | tar -xz -C /opt/spidermonkey && \
+    /opt/zig/zig ar d /opt/spidermonkey/lib/libjs_static.a Unified_cpp_mozglue_interposers0.o
+
+# The prebuilt env interposer resolves libc through dlsym(RTLD_NEXT), which
+# cannot work in this static musl binary. Use musl's environment functions.
 
 WORKDIR /app/backend
 
@@ -105,7 +109,7 @@ RUN --mount=type=cache,id=sub2api-gomod,target=/go/pkg/mod \
     CGO_LDFLAGS="-L/opt/spidermonkey/lib" \
     GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build \
     -tags embed \
-    -ldflags="-s -w -linkmode external -extldflags '-static -Wl,--strip-all' -X main.Version=${VERSION_VALUE} -X main.Commit=${COMMIT} -X main.Date=${DATE_VALUE} -X main.BuildType=release" \
+    -ldflags="-s -w -linkmode external -extldflags '-static -Wl,--strip-all -Wl,-z,stack-size=8388608' -X main.Version=${VERSION_VALUE} -X main.Commit=${COMMIT} -X main.Date=${DATE_VALUE} -X main.BuildType=release" \
     -trimpath \
     -o /app/sub2api \
     ./cmd/server

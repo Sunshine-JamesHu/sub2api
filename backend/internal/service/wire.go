@@ -1107,6 +1107,7 @@ func ProvidePlaygroundBrowserService(client *redis.Client, proxies ProxyReposito
 	}
 	service := NewPlaygroundBrowserService(cache, proxies)
 	service.startProfileCleanup(accounts)
+	service.startWarmup(accounts)
 	return service
 }
 func ProvideGeminiMessagesCompatService(accountRepo AccountRepository, groupRepo GroupRepository, cache GatewayCache, schedulerSnapshot *SchedulerSnapshotService, tokenProvider *GeminiTokenProvider, rateLimitService *RateLimitService, httpUpstream HTTPUpstream, antigravityGatewayService *AntigravityGatewayService, cfg *config.Config, browser *PlaygroundBrowserService) *GeminiMessagesCompatService {

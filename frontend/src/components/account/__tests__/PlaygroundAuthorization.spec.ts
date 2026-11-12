@@ -13,6 +13,24 @@ beforeEach(() => {
 })
 afterEach(() => { vi.useRealTimers() })
 describe('Camoufox authorization', () => {
+  it('opens the selected Gemini website using the same login controls', async () => {
+    const wrapper = mount(PlaygroundAuthorization, { props: { proxyId: 9 } })
+    await wrapper.get('select').setValue('gemini_web')
+    await wrapper.get('button').trigger('click'); await flushPromises()
+    expect(api.startPlaygroundLogin).toHaveBeenCalledWith(9, expect.any(AbortSignal), 'gemini_web')
+    expect(wrapper.get('select').attributes('disabled')).toBeDefined()
+    wrapper.unmount()
+  })
+  it('invalidates the completed grant when its source changes', async () => {
+    const wrapper = mount(PlaygroundAuthorization)
+    await wrapper.get('button').trigger('click'); await flushPromises()
+    await wrapper.findAll('button').find(button => button.text().includes('browserFinish'))!.trigger('click'); await flushPromises()
+    expect(wrapper.text()).toContain('browserReady')
+    await wrapper.get('select').setValue('gemini_web')
+    expect(wrapper.emitted('update:loginToken')?.at(-1)).toEqual([''])
+    expect(wrapper.text()).not.toContain('browserReady')
+    wrapper.unmount()
+  })
   it('replaces all Cookie and Chrome import inputs', () => {
     const wrapper = mount(PlaygroundAuthorization)
     expect(wrapper.find('textarea').exists()).toBe(false)
@@ -23,7 +41,7 @@ describe('Camoufox authorization', () => {
   it('captures a login grant, shows the verified email and stops the browser view', async () => {
     const wrapper = mount(PlaygroundAuthorization, { props: { proxyId: 7 } })
     await wrapper.get('button').trigger('click'); await flushPromises()
-    expect(api.startPlaygroundLogin).toHaveBeenCalledWith(7, expect.any(AbortSignal))
+    expect(api.startPlaygroundLogin).toHaveBeenCalledWith(7, expect.any(AbortSignal), 'aistudio')
     expect(wrapper.find('img').exists()).toBe(true)
     await wrapper.findAll('button').find(button => button.text().includes('browserFinish'))!.trigger('click'); await flushPromises()
     expect(wrapper.emitted('update:loginToken')).toContainEqual(['verified'])
